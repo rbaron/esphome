@@ -68,6 +68,8 @@ void FUSB302::setup() {
     return;
   }
 
+  // delay(10);
+
   uint8_t device_id;
   if (this->read_register(REG_DEVICE_ID, (uint8_t *) &device_id, 1, false)) {
     ESP_LOGE(TAG, "Failed to read device id");
@@ -95,7 +97,7 @@ void FUSB302::setup() {
     ESP_LOGE(TAG, "Failed to write to MASKB");
     return;
   }
-  if (!this->write_byte(REG_CONTROL0, 0x06)) {
+  if (!this->write_byte(REG_CONTROL0, 0b11 << 2)) {
     ESP_LOGE(TAG, "Failed to write to CONTROL0");
     return;
   }
@@ -106,17 +108,8 @@ void FUSB302::setup() {
     return;
   }
 
-  // We know by design that we're connected to CC1. For a general approach this has to be detected.
-
-  // Enable auto GoodCRC response and TXCC1, plus keep the revision 2.0 of the GoodCRC ack packet.
-  if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
-    ESP_LOGE(TAG, "Failed to write to SWITCHES1");
-    return;
-  }
-
-  // Enable CC1 measuring circuit.
-  if (!this->write_byte(REG_SWITCHES0, (1 << 0) | (1 << 2))) {
-    ESP_LOGE(TAG, "Failed to write to SWITCHES0");
+  if (!this->write_byte(REG_CONTROL2, 0x00)) {
+    ESP_LOGE(TAG, "Failed to write to CONTROL2");
     return;
   }
 
@@ -126,9 +119,38 @@ void FUSB302::setup() {
     return;
   }
 
+  // We know by design that we're connected to CC1. For a general approach this has to be detected.
+
+  // Enable CC1 measuring circuit.
+  if (!this->write_byte(REG_SWITCHES0, 0x07)) {
+    ESP_LOGE(TAG, "Failed to write to SWITCHES0");
+    return;
+  }
+  // Disable pull down?
+  // if (!this->write_byte(REG_SWITCHES0, 0x00)) {
+  //   ESP_LOGE(TAG, "Failed to write to SWITCHES0");
+  //   return;
+  // }
+
+  // Flush the TX FIFO.
+  if (!this->write_byte(REG_CONTROL0, 0x44)) {
+    ESP_LOGE(TAG, "Failed to write to CONTROL0");
+    return;
+  }
+  // Flush the RX FIFO.
+  if (!this->write_byte(REG_CONTROL1, 0x1 << 2)) {
+    ESP_LOGE(TAG, "Failed to write to CONTROL1");
+    return;
+  }
   // Reset PD logic.
   if (!this->write_byte(REG_RESET, 0x02)) {
     ESP_LOGE(TAG, "Failed to write to RESET");
+    return;
+  }
+
+  // Enable auto GoodCRC response and TXCC1, plus keep the revision 2.0 of the GoodCRC ack packet.
+  if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
+    ESP_LOGE(TAG, "Failed to write to SWITCHES1");
     return;
   }
 }
@@ -211,11 +233,17 @@ bool FUSB302::process_interrupt() {
   }
   // ESP_LOGD(TAG, "Status0: 0x%02X, Status1: 0x%02X", status0, status1);
 
+  // if (state_ == State::RECEIVED_CAPS) {
+  //   // Request a PDO.
+  //   return this->request_pdo(1);
+  // }
+
   // Is there RX data in the buffer?
   if ((status1 & (1 << 5)) == 0) {
-    ESP_LOGD(TAG, "There is RX data in buffer");
-    return this->read_fifo();
+    // ESP_LOGD(TAG, "There is RX data in buffer");
+    this->read_fifo();
   }
+
   // ESP_LOGD(TAG, "RX data in buffer");
 
   // if (!interrupt) {
@@ -242,9 +270,9 @@ bool FUSB302::read_fifo() {
 
   // We only care for SOP messages.
   if (((rx_token >> 4) & 0x0e) == 0x0e) {
-    ESP_LOGD(TAG, "SOP message. RX token: 0x%02X", rx_token);
+    // ESP_LOGD(TAG, "SOP message. RX token: 0x%02X", rx_token);
   } else {
-    ESP_LOGD(TAG, "Not a SOP message. RX token: 0x%02X", rx_token);
+    // ESP_LOGD(TAG, "Not a SOP message. RX token: 0x%02X", rx_token);
   }
 
   uint16_t header;
@@ -267,7 +295,9 @@ bool FUSB302::read_fifo() {
       ESP_LOGE(TAG, "Failed to read object %d", i);
       return false;
     }
-    ESP_LOGD(TAG, "Object %d: 0x%08X", i, objs[i]);
+    // ESP_LOGD(TAG, "Object %d: 0x%08X", i, objs[i]);
+    // PDO pdo = parse_pdo(objs[i]);
+    // log_pdo(pdo);
   }
 
   uint32_t crc;
@@ -276,21 +306,113 @@ bool FUSB302::read_fifo() {
     ESP_LOGE(TAG, "Failed to read CRC");
     return false;
   }
-  ESP_LOGD(TAG, "CRC: 0x%08X", crc);
+  // ESP_LOGD(TAG, "CRC: 0x%08X", crc);
 
   return handle_msg(msg_type, n_objects, objs);
 }
 
 bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
   if (n_objects == 0) {
-    ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
+    // ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
   } else {
-    ESP_LOGD(TAG, "Data message. Type: 0x%02X", msg_type);
+    // ESP_LOGD(TAG, "Data message. Type: 0x%02X", msg_type);
     // Source_Capabilities.
     if (msg_type == 0x01) {
       state_ = State::RECEIVED_CAPS;
+      // Test.
+      request_pdo(1);
+      // ESP_LOGD(TAG, "Source capabilities received. New state: %d", static_cast<int>(state_));
     }
   }
+  return true;
+}
+bool FUSB302::request_pdo(uint8_t pdo_idx) {
+  // ESP_LOGD(TAG, "Requesting fixed PDO with index %d", pdo_idx);
+
+  uint32_t request = 0;
+
+  // Object position -- index + 1.
+  request |= (((pdo_idx + 1) & 0x07) << 28);
+
+  // USB communications capability.
+  request |= (0x1 << 25);
+
+  // No USB suspend.
+  // request |= (0x1 << 24);
+
+  // Unchunked message supported.
+  request |= (0x1 << 23);
+
+  uint32_t current_10ma = 150;
+  request |= (current_10ma << 10);
+  request |= current_10ma;
+
+  // ESP_LOGV(TAG, "Will send RDO: 0x%08X", request);
+  // dump_rdo(&request, pdos_);
+
+  // Invert.
+  // request = byteswap(request);
+  // if (this->write_register16(REG_REQUEST, (uint8_t *) &request, sizeof(request))) {
+  //   // TODO: fatal.
+  //   ESP_LOGE(TAG, "Failed to write PD request");
+  //   return false;
+  // }
+
+  if (!this->send_msg(sizeof(request), (uint8_t *) &request)) {
+    ESP_LOGE(TAG, "Failed to send PD request");
+    return false;
+  }
+
+  state_ = State::REQUESTED_PDO;
+  ESP_LOGD(TAG, "Requested PDO");
+  return true;
+}
+
+bool FUSB302::send_msg(size_t len, uint8_t *data) {
+  // if (this->write_register16(REG_FIFOS, data, len)) {
+  //   ESP_LOGE(TAG, "Failed to write to FIFO");
+  //   return false;
+  // }
+  // return true;
+  // const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | static_cast<uint8_t>(len)};
+  const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | (((int) len) + 2)};
+  const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
+
+  uint16_t header = 0;
+  // Number of objects -- 1.
+  header |= 0x1 << 12;
+  // Spec revision -- 2.0.
+  header |= 0x1 << 6;
+  // Message type -- Request.
+  header |= 0x1 << 1;
+
+  uint8_t buff[32];
+  memcpy(buff, sop, sizeof(sop));
+  memcpy(buff + sizeof(sop), (uint8_t *) &header, sizeof(header));
+  memcpy(buff + sizeof(sop) + sizeof(header), data, len);
+  memcpy(buff + sizeof(sop) + sizeof(header) + len, eop, sizeof(eop));
+
+  // if (this->write_register(REG_FIFOS, sop, sizeof(sop), false)) {
+  //   ESP_LOGE(TAG, "Failed to write sop to FIFO");
+  //   return false;
+  // }
+  // if (this->write_register(REG_FIFOS, (uint8_t *) &header, sizeof(header), false)) {
+  //   ESP_LOGE(TAG, "Failed to write data to FIFO");
+  //   return false;
+  // }
+  // if (this->write_register(REG_FIFOS, data, len, false)) {
+  //   ESP_LOGE(TAG, "Failed to write data to FIFO");
+  //   return false;
+  // }
+  // if (this->write_register(REG_FIFOS, eop, sizeof(eop))) {
+  //   ESP_LOGE(TAG, "Failed to write eop to FIFO");
+  //   return false;
+  // }
+  if (this->write_register(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
+    ESP_LOGE(TAG, "Failed to write eop to FIFO");
+    return false;
+  }
+  ESP_LOGD(TAG, "Sent message");
   return true;
 }
 
