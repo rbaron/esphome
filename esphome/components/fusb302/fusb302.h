@@ -40,10 +40,6 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
     this->on_pd_negotiation_failure_callback_.add(std::move(callback));
   }
 
-  // void set_vbus_voltage_sensor(sensor::Sensor *vbus_voltage_sensor) {
-  //   this->vbus_voltage_sensor_ = vbus_voltage_sensor;
-  // }
-
  private:
   State state_{State::INITIALIZING};
 
@@ -52,10 +48,6 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   // PDOs received from the source.
   // PDO pdos_[FUSB302_MAX_PDOS];
-
-  // The selected PDO that satisfies the power requirement. Index into pdos_, as we need to actually send an index as
-  // part of the RDO.
-  // int selected_pdo_idx_{-1};
 
   // Interrupt pin.
   InternalGPIOPin *int_pin_{nullptr};
@@ -67,12 +59,6 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   bool send_msg(size_t len, uint8_t *data);
   bool handle_msg(uint8_t msg_type, uint8_t n_objs, uint32_t *objs);
   bool request_pdo(uint8_t pdo_idx);
-  // PDO get_current_pdo();
-  // bool handle_event_status(uint32_t event_status);
-  // bool handle_pd_response(uint32_t pd_response);
-  // bool handle_source_capabilities(uint8_t len);
-  // bool handle_pd_negotiation_complete(uint8_t len);
-  // bool request_selected_fixed_pdo();
 
   // Handles interrupts.
   static void ISR(FUSB302 *instance);
