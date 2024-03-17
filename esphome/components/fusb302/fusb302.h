@@ -2,6 +2,7 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
+#include "esphome/core/helpers.h"
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/fusb302/pdo.h"
@@ -29,6 +30,10 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   void set_power_requirement(uint16_t voltage_mv, uint16_t current_ma) {
     this->power_requirement_.voltage_mv = voltage_mv;
     this->power_requirement_.current_ma = current_ma;
+  }
+
+  void add_on_pd_negotiation_callback(std::function<void(bool)> &&callback) {
+    this->on_pd_negotiation_callback_.add(std::move(callback));
   }
 
   // void set_vbus_voltage_sensor(sensor::Sensor *vbus_voltage_sensor) {
@@ -69,6 +74,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   static void ISR(FUSB302 *instance);
 
   // sensor::Sensor *vbus_voltage_sensor_{nullptr};
+
+  CallbackManager<void(bool)> on_pd_negotiation_callback_{};
 };
 
 }  // namespace fusb302
