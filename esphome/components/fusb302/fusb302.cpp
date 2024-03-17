@@ -16,6 +16,9 @@ static const char *TAG = "fusb302.component";
 
 namespace {
 
+constexpr char kPPSTimerName[] = "pps_timer";
+constexpr int kPPSTimerIntervalMs = 8000;
+
 void dump_rdo(uint32_t *rdo_data, const PDO *pdos) {
   uint8_t obj_pos = (*rdo_data >> 28) & 0x7;
   uint8_t pdo_idx = obj_pos - 1;
@@ -57,6 +60,33 @@ void dump_rdo(uint32_t *rdo_data, const PDO *pdos) {
     return;
   }
   ESP_LOGW(TAG, "Unsupported RDO type: 0x%08X (PDO position %d)", *rdo_data, obj_pos);
+}
+
+uint32_t make_fixed_rdo(uint8_t pdo_idx, uint16_t max_current_ma) {
+  uint32_t rdo = 0;
+  rdo |= ((pdo_idx + 1) << 28);  // Object position.
+  rdo |= (0x0 << 27);            // Give back flag.
+  rdo |= (0x0 << 26);            // Cap mismatch.
+  rdo |= (0x1 << 25);            // USB cap.
+  rdo |= (0x1 << 24);            // No USB suspend.
+  rdo |= (0x0 << 23);            // Unchunked message supported.
+  rdo |= (0x0 << 22);            // EPR cap.
+  rdo |= (max_current_ma / 10) << 10;
+  rdo |= (max_current_ma / 10) << 0;
+  return rdo;
+}
+
+uint32_t make_pps_rdo(uint8_t pdo_idx, uint16_t voltage_mv, uint16_t current_ma) {
+  uint32_t rdo = 0;
+  rdo |= ((pdo_idx + 1) << 28);  // Object position.
+  rdo |= (0x0 << 26);            // Cap mismatch.
+  rdo |= (0x1 << 25);            // USB cap.
+  rdo |= (0x1 << 24);            // No USB suspend.
+  rdo |= (0x0 << 23);            // Unchunked message supported.
+  rdo |= (0x0 << 22);            // EPR cap.
+  rdo |= (voltage_mv / 20) << 9;
+  rdo |= (current_ma / 50) << 0;
+  return rdo;
 }
 
 }  // namespace
@@ -233,13 +263,6 @@ bool FUSB302::read_fifo() {
     return false;
   }
 
-  // We only care for SOP messages.
-  if (((rx_token >> 4) & 0x0e) == 0x0e) {
-    // ESP_LOGD(TAG, "SOP message. RX token: 0x%02X", rx_token);
-  } else {
-    // ESP_LOGD(TAG, "Not a SOP message. RX token: 0x%02X", rx_token);
-  }
-
   uint16_t header;
   // uint8_t header[2];
   if (this->read_register(REG_FIFOS, (uint8_t *) &header, 2)) {
@@ -249,7 +272,7 @@ bool FUSB302::read_fifo() {
   ESP_LOGD(TAG, "Header: 0x%04X", header);
 
   uint8_t n_objects = (header >> (12 - 0)) & 0x07;
-  ESP_LOGD(TAG, "Number of objects: %d", n_objects);
+  // ESP_LOGD(TAG, "Number of objects: %d", n_objects);
 
   uint8_t msg_type = header & 0xf;
 
@@ -260,9 +283,6 @@ bool FUSB302::read_fifo() {
       ESP_LOGE(TAG, "Failed to read object %d", i);
       return false;
     }
-    // ESP_LOGD(TAG, "Object %d: 0x%08X", i, objs[i]);
-    // PDO pdo = parse_pdo(objs[i]);
-    // log_pdo(pdo);
   }
 
   uint32_t crc;
@@ -273,14 +293,24 @@ bool FUSB302::read_fifo() {
   }
   // ESP_LOGD(TAG, "CRC: 0x%08X", crc);
 
-  return handle_msg(msg_type, n_objects, objs);
+  // We only care for SOP messages.
+  if (((rx_token >> 4) & 0x0e) == 0x0e) {
+    // ESP_LOGD(TAG, "SOP message. RX token: 0x%02X", rx_token);
+    return handle_msg(msg_type, n_objects, objs);
+  }
+  return true;
 }
 
 bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
   if (n_objects == 0) {
     // ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
-    if (msg_type == 0x03) {  // Accept.
+    if (msg_type == 0x01) {  // GoodCRC.
+      return true;
+    } else if (msg_type == 0x03) {  // Accept.
       ESP_LOGD(TAG, "Accept message received");
+      // Do we need to schedule a PPS timer?
+      this->cancel_timeout(kPPSTimerName);
+      this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
     } else if (msg_type == 0x06) {  // PS_RDY.
       ESP_LOGD(TAG, "PS_RDY message received");
       state_ = State::READY;
@@ -294,58 +324,81 @@ bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
     if (msg_type == 0x01) {
       state_ = State::RECEIVED_CAPS;
       // We have to be fast to send this response. Otherwise the power supply will hard reset.
-      request_pdo(1);
+      // return request_pdo(n_objects, objs);
+      if (!this->parse_pdos(n_objects, objs)) {
+        ESP_LOGE(TAG, "Failed to parse PDOS");
+        return false;
+      }
+      if (!this->request_pdo()) {
+        return false;
+      }
       state_ = State::REQUESTED_PDO;
-      ESP_LOGD(TAG, "Source capabilities received and requested. New state: %d", static_cast<int>(state_));
+      ESP_LOGD(TAG, "Requested PDO: ");
+      log_pdo(pdos_[*selected_pdo_idx_]);
+      return true;
     } else {
       ESP_LOGD(TAG, "Unhandled data message type: 0x%02X", msg_type);
     }
   }
   return true;
 }
-bool FUSB302::request_pdo(uint8_t pdo_idx) {
-  // ESP_LOGD(TAG, "Requesting fixed PDO with index %d", pdo_idx);
 
-  uint32_t request = 0;
+bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
+  // Ensure we're starting clean.
+  pdos_.clear();
+  selected_pdo_idx_.reset();
 
-  // Object position -- index + 1.
-  request |= (((pdo_idx + 1) & 0x07) << 28);
+  // Parse PDOs.
+  for (uint8_t i = 0; i < n_pdos; i++) {
+    pdos_.push_back(parse_pdo(pdos[i]));
+    const PDO &pdo = pdos_.back();
+    if (!pdo.parsed) {
+      ESP_LOGE(TAG, "Failed to parse PDO 0x%08X", pdos[i]);
+      return false;
+    }
+    // Select the first compatible PDO (fixed should be listed first).
+    if (!selected_pdo_idx_.has_value() && is_pdo_compatible(pdo, power_requirement_)) {
+      selected_pdo_idx_ = i;
+    }
+  }
 
-  // USB communications capability.
-  request |= (0x1 << 25);
+  if (!selected_pdo_idx_.has_value()) {
+    ESP_LOGE(TAG, "No compatible PDO found with voltage: %u mV; current: %u mA. All available: ",
+             power_requirement_.voltage_mv, power_requirement_.current_ma);
+    for (const auto &pdo : pdos_) {
+      log_pdo(pdo);
+    }
+    return false;
+  }
+  return true;
+}
 
-  // No USB suspend.
-  // request |= (0x1 << 24);
-
-  // Unchunked message supported.
-  request |= (0x1 << 23);
-
-  uint32_t current_10ma = 150;
-  request |= (current_10ma << 10);
-  request |= current_10ma;
-
-  // ESP_LOGV(TAG, "Will send RDO: 0x%08X", request);
-  // dump_rdo(&request, pdos_);
-
-  // Invert.
-  // request = byteswap(request);
-  // if (this->write_register16(REG_REQUEST, (uint8_t *) &request, sizeof(request))) {
-  //   // TODO: fatal.
-  //   ESP_LOGE(TAG, "Failed to write PD request");
-  //   return false;
-  // }
+bool FUSB302::request_pdo() {
+  // Fixed or PPS?
+  const PDO &pdo = pdos_[*selected_pdo_idx_];
+  uint32_t request;
+  if (pdo.type == PDO::Type::FIXED) {
+    request = make_fixed_rdo(*selected_pdo_idx_, power_requirement_.current_ma);
+  } else if (pdo.type == PDO::Type::AUGMENTED && pdo.augmented.type == PDO::Augmented::Type::SPR_PPS) {
+    request = make_pps_rdo(*selected_pdo_idx_, power_requirement_.voltage_mv, power_requirement_.current_ma);
+  } else {
+    ESP_LOGE(TAG, "Unsupported PDO type: %d", pdo.type);
+    return false;
+  }
 
   if (!this->send_msg(sizeof(request), (uint8_t *) &request)) {
     ESP_LOGE(TAG, "Failed to send PD request");
     return false;
   }
-
-  state_ = State::REQUESTED_PDO;
-  ESP_LOGD(TAG, "Requested PDO");
   return true;
 }
 
 bool FUSB302::send_msg(size_t len, uint8_t *data) {
+  static uint8_t msg_id = 0;
+
+  // Truncate to 3 bits (same as % 8).
+  msg_id &= 0x7;
+
   const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | (((int) len) + 2)};
   const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
 
@@ -356,6 +409,8 @@ bool FUSB302::send_msg(size_t len, uint8_t *data) {
   header |= 0x1 << 6;
   // Message type -- Request.
   header |= 0x1 << 1;
+  // Message ID.
+  header |= (msg_id++) << 9;
 
   uint8_t buff[32];
   memcpy(buff, sop, sizeof(sop));
@@ -369,6 +424,18 @@ bool FUSB302::send_msg(size_t len, uint8_t *data) {
   }
   ESP_LOGD(TAG, "Sent message");
   return true;
+}
+
+void FUSB302::maybe_rerequest_pps_pdo() {
+  ESP_LOGD(TAG, "Maybe rerequesting PPS PDO. State is: %d", state_);
+  if (state_ == State::READY && selected_pdo_idx_.has_value() &&
+      pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
+      pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
+    this->request_pdo();
+
+    // Schedule a new PPS timer.
+    this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
+  }
 }
 
 }  // namespace fusb302

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+#include "esphome/core/optional.h"
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/helpers.h"
@@ -47,7 +49,10 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   PowerRequirement power_requirement_;
 
   // PDOs received from the source.
-  // PDO pdos_[FUSB302_MAX_PDOS];
+  std::vector<PDO> pdos_;
+  uint8_t n_pdos_{0};
+  optional<uint8_t> selected_pdo_idx_;
+  // uint8_t selected_pdo_idx_{-1};
 
   // Interrupt pin.
   InternalGPIOPin *int_pin_{nullptr};
@@ -58,7 +63,10 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   bool read_fifo();
   bool send_msg(size_t len, uint8_t *data);
   bool handle_msg(uint8_t msg_type, uint8_t n_objs, uint32_t *objs);
-  bool request_pdo(uint8_t pdo_idx);
+  bool parse_pdos(uint8_t n_pdos, uint32_t *pdos);
+  bool request_pdo();
+
+  void maybe_rerequest_pps_pdo();
 
   // Handles interrupts.
   static void ISR(FUSB302 *instance);
