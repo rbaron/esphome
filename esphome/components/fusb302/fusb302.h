@@ -11,7 +11,6 @@ namespace fusb302 {
 
 enum class State {
   INITIALIZING = 0x0,
-  REQUESTED_CAPS,
   RECEIVED_CAPS,
   REQUESTED_PDO,
   READY,

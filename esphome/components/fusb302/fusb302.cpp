@@ -314,14 +314,25 @@ bool FUSB302::read_fifo() {
 bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
   if (n_objects == 0) {
     // ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
+    if (msg_type == 0x03) {  // Accept.
+      ESP_LOGD(TAG, "Accept message received");
+    } else if (msg_type == 0x06) {  // PS_RDY.
+      ESP_LOGD(TAG, "PS_RDY message received");
+      state_ = State::READY;
+      // Call callbacks here.
+    } else {
+      ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", msg_type);
+    }
   } else {
-    // ESP_LOGD(TAG, "Data message. Type: 0x%02X", msg_type);
     // Source_Capabilities.
     if (msg_type == 0x01) {
       state_ = State::RECEIVED_CAPS;
-      // Test.
+      // We have to be fast to send this response. Otherwise the power supply will hard reset.
       request_pdo(1);
-      // ESP_LOGD(TAG, "Source capabilities received. New state: %d", static_cast<int>(state_));
+      state_ = State::REQUESTED_PDO;
+      ESP_LOGD(TAG, "Source capabilities received and requested. New state: %d", static_cast<int>(state_));
+    } else {
+      ESP_LOGD(TAG, "Unhandled data message type: 0x%02X", msg_type);
     }
   }
   return true;
@@ -369,12 +380,6 @@ bool FUSB302::request_pdo(uint8_t pdo_idx) {
 }
 
 bool FUSB302::send_msg(size_t len, uint8_t *data) {
-  // if (this->write_register16(REG_FIFOS, data, len)) {
-  //   ESP_LOGE(TAG, "Failed to write to FIFO");
-  //   return false;
-  // }
-  // return true;
-  // const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | static_cast<uint8_t>(len)};
   const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | (((int) len) + 2)};
   const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
 
@@ -392,22 +397,6 @@ bool FUSB302::send_msg(size_t len, uint8_t *data) {
   memcpy(buff + sizeof(sop) + sizeof(header), data, len);
   memcpy(buff + sizeof(sop) + sizeof(header) + len, eop, sizeof(eop));
 
-  // if (this->write_register(REG_FIFOS, sop, sizeof(sop), false)) {
-  //   ESP_LOGE(TAG, "Failed to write sop to FIFO");
-  //   return false;
-  // }
-  // if (this->write_register(REG_FIFOS, (uint8_t *) &header, sizeof(header), false)) {
-  //   ESP_LOGE(TAG, "Failed to write data to FIFO");
-  //   return false;
-  // }
-  // if (this->write_register(REG_FIFOS, data, len, false)) {
-  //   ESP_LOGE(TAG, "Failed to write data to FIFO");
-  //   return false;
-  // }
-  // if (this->write_register(REG_FIFOS, eop, sizeof(eop))) {
-  //   ESP_LOGE(TAG, "Failed to write eop to FIFO");
-  //   return false;
-  // }
   if (this->write_register(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
     ESP_LOGE(TAG, "Failed to write eop to FIFO");
     return false;
