@@ -7,10 +7,17 @@
 namespace esphome {
 namespace fusb302 {
 
-class OnPDNegotiationTrigger : public Trigger<bool> {
+class OnPDNegotiationSuccessTrigger : public Trigger<bool> {
  public:
-  OnPDNegotiationTrigger(FUSB302 *fusb302) {
-    fusb302->add_on_pd_negotiation_callback([this](bool success) { this->trigger(success); });
+  OnPDNegotiationSuccessTrigger(FUSB302 *fusb302) {
+    fusb302->add_on_pd_negotiation_success_callback([this](bool success) { this->trigger(success); });
+  }
+};
+
+class OnPDNegotiationFailureTrigger : public Trigger<bool> {
+ public:
+  OnPDNegotiationFailureTrigger(FUSB302 *fusb302) {
+    fusb302->add_on_pd_negotiation_failure_callback([this](bool success) { this->trigger(success); });
   }
 };
 

@@ -32,8 +32,12 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
     this->power_requirement_.current_ma = current_ma;
   }
 
-  void add_on_pd_negotiation_callback(std::function<void(bool)> &&callback) {
-    this->on_pd_negotiation_callback_.add(std::move(callback));
+  void add_on_pd_negotiation_success_callback(std::function<void(bool)> &&callback) {
+    this->on_pd_negotiation_success_callback_.add(std::move(callback));
+  }
+
+  void add_on_pd_negotiation_failure_callback(std::function<void(bool)> &&callback) {
+    this->on_pd_negotiation_failure_callback_.add(std::move(callback));
   }
 
   // void set_vbus_voltage_sensor(sensor::Sensor *vbus_voltage_sensor) {
@@ -75,7 +79,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   // sensor::Sensor *vbus_voltage_sensor_{nullptr};
 
-  CallbackManager<void(bool)> on_pd_negotiation_callback_{};
+  CallbackManager<void(bool)> on_pd_negotiation_success_callback_{};
+  CallbackManager<void(bool)> on_pd_negotiation_failure_callback_{};
 };
 
 }  // namespace fusb302

@@ -11,7 +11,8 @@ from esphome.const import (
     CONF_TRIGGER_ID,
 )
 
-CONF_ON_PD_NEGOTIATION_OUTCOME = "on_pd_negotiation_outcome"
+CONF_ON_PD_NEGOTIATION_SUCCESS = "on_pd_negotiation_success"
+CONF_ON_PD_NEGOTIATION_FAILURE = "on_pd_negotiation_failure"
 
 DEPENDENCIES = ["i2c"]
 AUTO_LOAD = ["sensor"]
@@ -22,8 +23,12 @@ CONF_VBUS_VOLTAGE = "vbus_voltage_sensor"
 fusb302_ns = cg.esphome_ns.namespace("fusb302")
 FUSB302 = fusb302_ns.class_("FUSB302", cg.Component, i2c.I2CDevice)
 
-OnPDNegotiationTrigger = fusb302_ns.class_(
-    "OnPDNegotiationTrigger", automation.Trigger.template(cg.bool_)
+OnPDNegotiationSuccessTrigger = fusb302_ns.class_(
+    "OnPDNegotiationSuccessTrigger", automation.Trigger.template(cg.bool_)
+)
+
+OnPDNegotiationFailureTrigger = fusb302_ns.class_(
+    "OnPDNegotiationFailureTrigger", automation.Trigger.template(cg.bool_)
 )
 
 CONFIG_SCHEMA = (
@@ -35,8 +40,19 @@ CONFIG_SCHEMA = (
             ),
             cv.Required(CONF_VOLTAGE): cv.voltage,
             cv.Required(CONF_CURRENT): cv.current,
-            cv.Optional(CONF_ON_PD_NEGOTIATION_OUTCOME): automation.validate_automation(
-                {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnPDNegotiationTrigger)}
+            cv.Optional(CONF_ON_PD_NEGOTIATION_SUCCESS): automation.validate_automation(
+                {
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
+                        OnPDNegotiationSuccessTrigger
+                    )
+                }
+            ),
+            cv.Optional(CONF_ON_PD_NEGOTIATION_FAILURE): automation.validate_automation(
+                {
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
+                        OnPDNegotiationFailureTrigger
+                    )
+                }
             ),
         }
     )
@@ -63,6 +79,10 @@ async def to_code(config):
         sens = await sensor.new_sensor(config[CONF_VBUS_VOLTAGE])
         cg.add(var.set_vbus_voltage_sensor(sens))
 
-    for conf in config.get(CONF_ON_PD_NEGOTIATION_OUTCOME, []):
+    for conf in config.get(CONF_ON_PD_NEGOTIATION_SUCCESS, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [(bool, "success")], conf)
+
+    for conf in config.get(CONF_ON_PD_NEGOTIATION_FAILURE, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(bool, "success")], conf)

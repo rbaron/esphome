@@ -159,7 +159,13 @@ void FUSB302::loop() {
   if (state_ == State::FAILURE) {
     return;
   }
-  this->process_interrupt();
+
+  if (!this->process_interrupt()) {
+    ESP_LOGE(TAG, "Failed to process interrupt -- assuming failure");
+    state_ = State::FAILURE;
+    on_pd_negotiation_failure_callback_.call(/*success=*/false);
+    return;
+  }
 }
 
 void FUSB302::update() {
@@ -320,7 +326,7 @@ bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
       ESP_LOGD(TAG, "PS_RDY message received");
       state_ = State::READY;
       // Call callbacks here.
-      on_pd_negotiation_callback_.call(/*success=*/true);
+      on_pd_negotiation_success_callback_.call(/*success=*/true);
     } else {
       ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", msg_type);
     }
