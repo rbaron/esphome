@@ -308,14 +308,18 @@ bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
       return true;
     } else if (msg_type == 0x03) {  // Accept.
       ESP_LOGD(TAG, "Accept message received");
+    } else if (msg_type == 0x06) {  // PS_RDY.
+      ESP_LOGD(TAG, "PS_RDY message received");
       // Do we need to schedule a PPS timer?
       this->cancel_timeout(kPPSTimerName);
       this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
-    } else if (msg_type == 0x06) {  // PS_RDY.
-      ESP_LOGD(TAG, "PS_RDY message received");
+      // Only call the callback if we're _NOT_ already in the READY state (so we avoid re-calling on every PPS
+      // re-request).
+      if (state_ != State::READY) {
+        on_pd_negotiation_success_callback_.call(/*success=*/true);
+      }
+
       state_ = State::READY;
-      // Call callbacks here.
-      on_pd_negotiation_success_callback_.call(/*success=*/true);
     } else {
       ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", msg_type);
     }
