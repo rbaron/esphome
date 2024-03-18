@@ -21,6 +21,14 @@ enum class State {
   FAILURE,
 };
 
+struct FIFOMsg {
+  enum class Destination { UNKNOWN, SOP };
+  Destination destination = Destination::UNKNOWN;
+  uint8_t msg_type;
+  uint8_t n_objs;
+  uint32_t objs[FUSB302_MAX_PDOS];
+};
+
 class FUSB302 : public i2c::I2CDevice, public PollingComponent {
  public:
   void setup() override;
@@ -49,6 +57,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   // From config.
   PowerRequirement power_requirement_;
 
+  FIFOMsg fifo_msg_{};
+
   // PDOs received from the source.
   std::vector<PDO> pdos_;
   uint8_t n_pdos_{0};
@@ -62,8 +72,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   // Methods.
   bool process_interrupt();
   bool read_fifo();
+  bool handle_msg();
   bool send_msg(size_t len, uint8_t *data);
-  bool handle_msg(uint8_t msg_type, uint8_t n_objs, uint32_t *objs);
   bool parse_pdos(uint8_t n_pdos, uint32_t *pdos);
   bool request_pdo();
 

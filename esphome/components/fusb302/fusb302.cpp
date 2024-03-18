@@ -4,10 +4,8 @@
 #include "esphome/components/fusb302/pdo.h"
 #include "esphome/components/fusb302/regs.h"
 
-// TODO: Use ESPHome's built-in bit manipulation functions.
 // #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
 // #define HAS_BIT(v, b) (HAS_BITS(v, b, 1))
-// #define SWAP16(v) ((((v) >> 8) & 0xff) | (((v) & 0xff) << 8))
 
 namespace esphome {
 namespace fusb302 {
@@ -91,6 +89,11 @@ uint32_t make_pps_rdo(uint8_t pdo_idx, uint16_t voltage_mv, uint16_t current_ma)
 
 }  // namespace
 
+void FUSB302::dump_config() {
+  ESP_LOGCONFIG(TAG, "fusb302");
+  LOG_UPDATE_INTERVAL(this);
+}
+
 void FUSB302::setup() {
   // Reset.
   if (!this->write_byte(REG_RESET, 0x01)) {
@@ -98,15 +101,14 @@ void FUSB302::setup() {
     return;
   }
 
-  // delay(10);
-
+  // Get the device id.
   uint8_t device_id;
   if (this->read_register(REG_DEVICE_ID, (uint8_t *) &device_id, 1, false)) {
     ESP_LOGE(TAG, "Failed to read device id");
+    return;
   } else {
     ESP_LOGV(TAG, "Device id: 0x%04X", device_id);
   }
-  // state_ = State::REQUESTED_CAPS;
 
   // Write to POWER.
   if (!this->write_byte(REG_POWER, 0x0f)) {
@@ -156,11 +158,6 @@ void FUSB302::setup() {
     ESP_LOGE(TAG, "Failed to write to SWITCHES0");
     return;
   }
-  // Disable pull down?
-  // if (!this->write_byte(REG_SWITCHES0, 0x00)) {
-  //   ESP_LOGE(TAG, "Failed to write to SWITCHES0");
-  //   return;
-  // }
 
   // Flush the TX FIFO.
   if (!this->write_byte(REG_CONTROL0, 0x44)) {
@@ -186,24 +183,17 @@ void FUSB302::setup() {
 }
 
 void FUSB302::loop() {
+  // Unrecoverable failure.
   if (state_ == State::FAILURE) {
     return;
   }
 
   if (!this->process_interrupt()) {
-    ESP_LOGE(TAG, "Failed to process interrupt -- assuming failure");
-    state_ = State::FAILURE;
-    on_pd_negotiation_failure_callback_.call(/*success=*/false);
     return;
   }
 }
 
 void FUSB302::update() {}
-
-void FUSB302::dump_config() {
-  ESP_LOGCONFIG(TAG, "fusb302");
-  LOG_UPDATE_INTERVAL(this);
-}
 
 // Interrupt callback.
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
@@ -212,41 +202,43 @@ bool FUSB302::process_interrupt() {
   // Read interrupt.
   uint8_t interrupt;
   if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
-    ESP_LOGE(TAG, "Failed to read interrupt");
+    ESP_LOGW(TAG, "Failed to read interrupt");
     return false;
   }
   // ESP_LOGD(TAG, "Interrupt: 0x%02X", interrupt);
 
   uint8_t status0, status1;
   if (this->read_register(REG_STATUS0, &status0, 1)) {
-    ESP_LOGE(TAG, "Failed to read status0");
+    ESP_LOGW(TAG, "Failed to read status0");
     return false;
   }
   if (this->read_register(REG_STATUS1, &status1, 1)) {
-    ESP_LOGE(TAG, "Failed to read status1");
+    ESP_LOGW(TAG, "Failed to read status1");
     return false;
   }
   // ESP_LOGD(TAG, "Status0: 0x%02X, Status1: 0x%02X", status0, status1);
 
-  // if (state_ == State::RECEIVED_CAPS) {
-  //   // Request a PDO.
-  //   return this->request_pdo(1);
-  // }
-
   // Is there RX data in the buffer?
-  if ((status1 & (1 << 5)) == 0) {
-    // ESP_LOGD(TAG, "There is RX data in buffer");
-    if (!this->read_fifo()) {
-      return false;
-    }
+
+  // If there's no data to read, we're done.
+
+  if ((status1 & (1 << 5)) != 0) {
+    return true;
   }
 
-  // ESP_LOGD(TAG, "RX data in buffer");
+  // Read FIFO data into fifo_msg_.
+  if (!this->read_fifo()) {
+    state_ = State::FAILURE;
+    on_pd_negotiation_failure_callback_.call(/*success=*/false);
+    return false;
+  }
 
-  // if (!interrupt) {
-  //   // ESP_LOGE(TAG, "Interrupt is not actually set");
-  //   return false;
-  // }
+  // Handle the message if its for us.
+  if (fifo_msg_.destination == FIFOMsg::Destination::SOP && !this->handle_msg()) {
+    state_ = State::FAILURE;
+    on_pd_negotiation_failure_callback_.call(/*success=*/false);
+    return false;
+  }
 
   // // Clear interrupt.
   // if (this->write_register16(REG_INTERRUPT, &interrupt, 1)) {
@@ -254,7 +246,6 @@ bool FUSB302::process_interrupt() {
   //   return false;
   // }
 
-  // interrupt_pending_ = false;
   return true;
 }
 
@@ -273,15 +264,12 @@ bool FUSB302::read_fifo() {
   }
   ESP_LOGD(TAG, "Header: 0x%04X", header);
 
-  uint8_t n_objects = (header >> (12 - 0)) & 0x07;
-  // ESP_LOGD(TAG, "Number of objects: %d", n_objects);
-
-  uint8_t msg_type = header & 0xf;
+  fifo_msg_.n_objs = (header >> 12) & 0x07;
+  fifo_msg_.msg_type = header & 0xf;
 
   // Read objects.
-  uint32_t objs[FUSB302_MAX_PDOS];
-  for (uint8_t i = 0; i < n_objects; i++) {
-    if (this->read_register(REG_FIFOS, (uint8_t *) objs + 4 * i, 4)) {
+  for (uint8_t i = 0; i < fifo_msg_.n_objs; i++) {
+    if (this->read_register(REG_FIFOS, (uint8_t *) fifo_msg_.objs + 4 * i, 4)) {
       ESP_LOGE(TAG, "Failed to read object %d", i);
       return false;
     }
@@ -293,24 +281,20 @@ bool FUSB302::read_fifo() {
     ESP_LOGE(TAG, "Failed to read CRC");
     return false;
   }
-  // ESP_LOGD(TAG, "CRC: 0x%08X", crc);
 
-  // We only care for SOP messages.
-  if (((rx_token >> 4) & 0x0e) == 0x0e) {
-    // ESP_LOGD(TAG, "SOP message. RX token: 0x%02X", rx_token);
-    return handle_msg(msg_type, n_objects, objs);
-  }
+  fifo_msg_.destination = ((rx_token >> 4) & 0x0e) == 0x0e ? FIFOMsg::Destination::SOP : FIFOMsg::Destination::UNKNOWN;
+
   return true;
 }
 
-bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
-  if (n_objects == 0) {
+bool FUSB302::handle_msg() {
+  if (fifo_msg_.n_objs == 0) {
     // ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
-    if (msg_type == 0x01) {  // GoodCRC.
+    if (fifo_msg_.msg_type == 0x01) {  // GoodCRC.
       return true;
-    } else if (msg_type == 0x03) {  // Accept.
+    } else if (fifo_msg_.msg_type == 0x03) {  // Accept.
       ESP_LOGD(TAG, "Accept message received");
-    } else if (msg_type == 0x06) {  // PS_RDY.
+    } else if (fifo_msg_.msg_type == 0x06) {  // PS_RDY.
       ESP_LOGD(TAG, "PS_RDY message received");
 
       if (state_ == State::REQUESTED_SAFE_5V) {
@@ -338,27 +322,24 @@ bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
 
       state_ = State::READY;
     } else {
-      ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", msg_type);
+      ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
     }
   } else {
     // Source_Capabilities.
-    if (msg_type == 0x01) {
+    if (fifo_msg_.msg_type == 0x01) {
       state_ = State::RECEIVED_CAPS;
       // We have to be fast to send this response. Otherwise the power supply will hard reset.
-      // return request_pdo(n_objects, objs);
-      if (!this->parse_pdos(n_objects, objs)) {
+      if (!this->parse_pdos(fifo_msg_.n_objs, fifo_msg_.objs)) {
         ESP_LOGE(TAG, "Failed to parse PDOS");
         return false;
       }
       if (!this->request_pdo()) {
         return false;
       }
-      // state_ = State::REQUESTED_PDO;
       ESP_LOGD(TAG, "Requested PDO: ");
       log_pdo(pdos_[*selected_pdo_idx_]);
-      return true;
     } else {
-      ESP_LOGD(TAG, "Unhandled data message type: 0x%02X", msg_type);
+      ESP_LOGD(TAG, "Unhandled data message type: 0x%02X", fifo_msg_.msg_type);
     }
   }
   return true;
