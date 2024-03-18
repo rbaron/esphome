@@ -236,7 +236,9 @@ bool FUSB302::process_interrupt() {
   // Is there RX data in the buffer?
   if ((status1 & (1 << 5)) == 0) {
     // ESP_LOGD(TAG, "There is RX data in buffer");
-    this->read_fifo();
+    if (!this->read_fifo()) {
+      return false;
+    }
   }
 
   // ESP_LOGD(TAG, "RX data in buffer");
@@ -310,6 +312,21 @@ bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
       ESP_LOGD(TAG, "Accept message received");
     } else if (msg_type == 0x06) {  // PS_RDY.
       ESP_LOGD(TAG, "PS_RDY message received");
+
+      if (state_ == State::REQUESTED_SAFE_5V) {
+        // We've requested Safe5V and received a PS_RDY message it means we didn't have a suitable PDO. Enter failure
+        // mode.
+        // state_ = State::FAILURE;
+        ESP_LOGE(TAG,
+                 "No compatible PDO found for voltage: %u mV; current: %u mA. Requested the safe 5V so we don't lose "
+                 "power altogether. The available Power Delivery Objects are: ",
+                 power_requirement_.voltage_mv, power_requirement_.current_ma);
+        for (const auto &pdo : pdos_) {
+          log_pdo(pdo);
+        }
+        return false;
+      }
+
       // Do we need to schedule a PPS timer?
       this->cancel_timeout(kPPSTimerName);
       this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
@@ -336,7 +353,7 @@ bool FUSB302::handle_msg(uint8_t msg_type, uint8_t n_objects, uint32_t *objs) {
       if (!this->request_pdo()) {
         return false;
       }
-      state_ = State::REQUESTED_PDO;
+      // state_ = State::REQUESTED_PDO;
       ESP_LOGD(TAG, "Requested PDO: ");
       log_pdo(pdos_[*selected_pdo_idx_]);
       return true;
@@ -367,12 +384,11 @@ bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
   }
 
   if (!selected_pdo_idx_.has_value()) {
-    ESP_LOGE(TAG, "No compatible PDO found with voltage: %u mV; current: %u mA. All available: ",
-             power_requirement_.voltage_mv, power_requirement_.current_ma);
-    for (const auto &pdo : pdos_) {
-      log_pdo(pdo);
-    }
-    return false;
+    // If we don't find a compatible PDO, we'll just select the first one, which is guaranteed to be Safe5V (I think?).
+    selected_pdo_idx_ = 0;
+    state_ = State::REQUESTED_SAFE_5V;
+  } else {
+    state_ = State::REQUESTED_PDO;
   }
   return true;
 }

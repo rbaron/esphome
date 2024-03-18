@@ -16,6 +16,7 @@ enum class State {
   INITIALIZING = 0x0,
   RECEIVED_CAPS,
   REQUESTED_PDO,
+  REQUESTED_SAFE_5V,
   READY,
   FAILURE,
 };
