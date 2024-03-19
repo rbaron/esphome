@@ -7,6 +7,12 @@
 // #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
 // #define HAS_BIT(v, b) (HAS_BITS(v, b, 1))
 
+#define FUSB302_FAIL(str, ...) \
+  do { \
+    ESP_LOGE(TAG, str, ##__VA_ARGS__); \
+    enter_state(State::FAILURE); \
+  } while (0)
+
 namespace esphome {
 namespace fusb302 {
 
@@ -97,14 +103,14 @@ void FUSB302::dump_config() {
 void FUSB302::setup() {
   // Reset.
   if (!this->write_byte(REG_RESET, 0x01)) {
-    ESP_LOGE(TAG, "Failed to write to RESET");
+    FUSB302_FAIL("Failed to write to RESET");
     return;
   }
 
   // Get the device id.
   uint8_t device_id;
   if (this->read_register(REG_DEVICE_ID, (uint8_t *) &device_id, 1, false)) {
-    ESP_LOGE(TAG, "Failed to read device id");
+    FUSB302_FAIL("Failed to read device id");
     return;
   } else {
     ESP_LOGV(TAG, "Device id: 0x%04X", device_id);
@@ -112,72 +118,72 @@ void FUSB302::setup() {
 
   // Write to POWER.
   if (!this->write_byte(REG_POWER, 0x0f)) {
-    ESP_LOGE(TAG, "Failed to write to POWER");
+    FUSB302_FAIL("Failed to write to POWER");
     return;
   }
 
   // Enable all interrupts.
   if (!this->write_byte(REG_MASK1, 0x00)) {
-    ESP_LOGE(TAG, "Failed to write to MASK1");
+    FUSB302_FAIL("Failed to write to MASK1");
     return;
   }
   if (!this->write_byte(REG_MASKA, 0x00)) {
-    ESP_LOGE(TAG, "Failed to write to MASKA");
+    FUSB302_FAIL("Failed to write to MASKA");
     return;
   }
   if (!this->write_byte(REG_MASKB, 0x00)) {
-    ESP_LOGE(TAG, "Failed to write to MASKB");
+    FUSB302_FAIL("Failed to write to MASKB");
     return;
   }
   if (!this->write_byte(REG_CONTROL0, 0b11 << 2)) {
     ESP_LOGE(TAG, "Failed to write to CONTROL0");
+    FUSB302_FAIL("Failed to write to CONTROL0");
     return;
   }
 
   // Enable packet retry.
   if (!this->write_byte(REG_CONTROL3, 0x07)) {
-    ESP_LOGE(TAG, "Failed to write to CONTROL3");
+    FUSB302_FAIL("Failed to write to CONTROL3");
     return;
   }
 
   if (!this->write_byte(REG_CONTROL2, 0x00)) {
-    ESP_LOGE(TAG, "Failed to write to CONTROL2");
+    FUSB302_FAIL("Failed to write to CONTROL2");
     return;
   }
 
   // Clear RX fifo.
   if (!this->write_byte(REG_CONTROL1, 0x04)) {
-    ESP_LOGE(TAG, "Failed to write to CONTROL1");
+    FUSB302_FAIL("Failed to write to CONTROL1");
     return;
   }
 
   // We know by design that we're connected to CC1. For a general approach this has to be detected.
-
   // Enable CC1 measuring circuit.
   if (!this->write_byte(REG_SWITCHES0, 0x07)) {
-    ESP_LOGE(TAG, "Failed to write to SWITCHES0");
+    FUSB302_FAIL("Failed to write to SWITCHES0");
     return;
   }
 
   // Flush the TX FIFO.
   if (!this->write_byte(REG_CONTROL0, 0x44)) {
-    ESP_LOGE(TAG, "Failed to write to CONTROL0");
+    FUSB302_FAIL("Failed to write to CONTROL0");
     return;
   }
   // Flush the RX FIFO.
   if (!this->write_byte(REG_CONTROL1, 0x1 << 2)) {
-    ESP_LOGE(TAG, "Failed to write to CONTROL1");
+    FUSB302_FAIL("Failed to write to CONTROL1");
     return;
   }
   // Reset PD logic.
   if (!this->write_byte(REG_RESET, 0x02)) {
-    ESP_LOGE(TAG, "Failed to write to RESET");
+    FUSB302_FAIL("Failed to write to RESET");
     return;
   }
 
   // Enable auto GoodCRC response and TXCC1, plus keep the revision 2.0 of the GoodCRC ack packet.
   if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
-    ESP_LOGE(TAG, "Failed to write to SWITCHES1");
+    FUSB302_FAIL("Failed to write to SWITCHES1");
     return;
   }
 }
@@ -196,6 +202,7 @@ void FUSB302::loop() {
 void FUSB302::update() {}
 
 // Interrupt callback.
+// TODO: set up interrupt handling. Right now we're just polling.
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
 
 bool FUSB302::process_interrupt() {
@@ -216,27 +223,20 @@ bool FUSB302::process_interrupt() {
     ESP_LOGW(TAG, "Failed to read status1");
     return false;
   }
-  // ESP_LOGD(TAG, "Status0: 0x%02X, Status1: 0x%02X", status0, status1);
-
-  // Is there RX data in the buffer?
-
   // If there's no data to read, we're done.
-
   if ((status1 & (1 << 5)) != 0) {
     return true;
   }
 
   // Read FIFO data into fifo_msg_.
   if (!this->read_fifo()) {
-    state_ = State::FAILURE;
-    on_pd_negotiation_failure_callback_.call(/*success=*/false);
+    FUSB302_FAIL("Failed to read FIFO");
     return false;
   }
 
   // Handle the message if its for us.
-  if (fifo_msg_.destination == FIFOMsg::Destination::SOP && !this->handle_msg()) {
-    state_ = State::FAILURE;
-    on_pd_negotiation_failure_callback_.call(/*success=*/false);
+  if (fifo_msg_.destination == FIFOMsg::Destination::SOP && !handle_msg()) {
+    FUSB302_FAIL("Failed to handle message");
     return false;
   }
 
@@ -257,7 +257,6 @@ bool FUSB302::read_fifo() {
   }
 
   uint16_t header;
-  // uint8_t header[2];
   if (this->read_register(REG_FIFOS, (uint8_t *) &header, 2)) {
     ESP_LOGE(TAG, "Failed to read header");
     return false;
@@ -266,6 +265,11 @@ bool FUSB302::read_fifo() {
 
   fifo_msg_.n_objs = (header >> 12) & 0x07;
   fifo_msg_.msg_type = header & 0xf;
+
+  if (fifo_msg_.n_objs > FUSB302_MAX_PDOS) {
+    ESP_LOGE(TAG, "Too many objects in message of type %d: %d", fifo_msg_.msg_type, fifo_msg_.n_objs);
+    return false;
+  }
 
   // Read objects.
   for (uint8_t i = 0; i < fifo_msg_.n_objs; i++) {
@@ -299,8 +303,6 @@ bool FUSB302::handle_msg() {
 
       if (state_ == State::REQUESTED_SAFE_5V) {
         // We've requested Safe5V and received a PS_RDY message it means we didn't have a suitable PDO. Enter failure
-        // mode.
-        // state_ = State::FAILURE;
         ESP_LOGE(TAG,
                  "No compatible PDO found for voltage: %u mV; current: %u mA. Requested the safe 5V so we don't lose "
                  "power altogether. The available Power Delivery Objects are: ",
@@ -310,25 +312,16 @@ bool FUSB302::handle_msg() {
         }
         return false;
       }
-
-      // Do we need to schedule a PPS timer?
-      this->cancel_timeout(kPPSTimerName);
-      this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
-      // Only call the callback if we're _NOT_ already in the READY state (so we avoid re-calling on every PPS
-      // re-request).
-      if (state_ != State::READY) {
-        on_pd_negotiation_success_callback_.call(/*success=*/true);
-      }
-
-      state_ = State::READY;
+      enter_state(State::READY);
     } else {
       ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
     }
   } else {
     // Source_Capabilities.
     if (fifo_msg_.msg_type == 0x01) {
-      state_ = State::RECEIVED_CAPS;
-      // We have to be fast to send this response. Otherwise the power supply will hard reset.
+      enter_state(State::RECEIVED_CAPS);
+      // We have to be fast to send this response (ideally < 10ms). Otherwise the power supply will hard reset. So
+      // better to avoid a state loop and just do it right away.
       if (!this->parse_pdos(fifo_msg_.n_objs, fifo_msg_.objs)) {
         ESP_LOGE(TAG, "Failed to parse PDOS");
         return false;
@@ -365,11 +358,14 @@ bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
   }
 
   if (!selected_pdo_idx_.has_value()) {
-    // If we don't find a compatible PDO, we'll just select the first one, which is guaranteed to be Safe5V (I think?).
+    // If we don't find a compatible PDO, we'll just select the first one, which is guaranteed to be Safe5V (I
+    // think?).
+    // TODO: check that we actually parsed the PDOs and that PDO 0 is indeed Safe5V.
+    // TODO: move this logic to request_pdo.
     selected_pdo_idx_ = 0;
-    state_ = State::REQUESTED_SAFE_5V;
+    enter_state(State::REQUESTED_SAFE_5V);
   } else {
-    state_ = State::REQUESTED_PDO;
+    enter_state(State::REQUESTED_PDO);
   }
   return true;
 }
@@ -394,13 +390,13 @@ bool FUSB302::request_pdo() {
   return true;
 }
 
-bool FUSB302::send_msg(size_t len, uint8_t *data) {
+bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
   static uint8_t msg_id = 0;
 
   // Truncate to 3 bits (same as % 8).
   msg_id &= 0x7;
 
-  const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | (((int) len) + 2)};
+  const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | (len + static_cast<uint8_t>(2))};
   const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
 
   uint16_t header = 0;
@@ -413,6 +409,7 @@ bool FUSB302::send_msg(size_t len, uint8_t *data) {
   // Message ID.
   header |= (msg_id++) << 9;
 
+  // TODO: make this slightly less horrible.
   uint8_t buff[32];
   memcpy(buff, sop, sizeof(sop));
   memcpy(buff + sizeof(sop), (uint8_t *) &header, sizeof(header));
@@ -436,6 +433,35 @@ void FUSB302::maybe_rerequest_pps_pdo() {
 
     // Schedule a new PPS timer.
     this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
+  }
+}
+
+void FUSB302::enter_state(State state) {
+  if (state_ == state) {
+    return;
+  }
+
+  state_ = state;
+
+  switch (state_) {
+    case State::READY: {
+      on_pd_negotiation_success_callback_.call(/*success=*/true);
+
+      // Do we need to schedule a PPS timer?
+      cancel_timeout(kPPSTimerName);
+      if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
+          pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
+        this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
+      }
+      break;
+    }
+    case State::FAILURE: {
+      on_pd_negotiation_failure_callback_.call(/*success=*/false);
+      cancel_timeout(kPPSTimerName);
+      break;
+    }
+    default:
+      break;
   }
 }
 

@@ -73,11 +73,13 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   bool process_interrupt();
   bool read_fifo();
   bool handle_msg();
-  bool send_msg(size_t len, uint8_t *data);
+  bool send_msg(uint8_t len, uint8_t *data);
   bool parse_pdos(uint8_t n_pdos, uint32_t *pdos);
   bool request_pdo();
-
   void maybe_rerequest_pps_pdo();
+
+  // Wrapper around state change, so we can trigger callbacks.
+  void enter_state(State state);
 
   // Handles interrupts.
   static void ISR(FUSB302 *instance);
