@@ -24,6 +24,7 @@ enum class State {
 struct FIFOMsg {
   enum class Destination { UNKNOWN, SOP };
   Destination destination = Destination::UNKNOWN;
+  uint16_t header;
   uint8_t msg_type;
   uint8_t n_objs;
   uint32_t objs[FUSB302_MAX_PDOS];
@@ -54,16 +55,20 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
  private:
   State state_{State::INITIALIZING};
 
+  HighFrequencyLoopRequester high_freq_loop_req_;
+
   // From config.
   PowerRequirement power_requirement_;
 
   FIFOMsg fifo_msg_{};
 
+  // Will be learned from messages received from the source.
+  uint8_t pd_spec_;
+
   // PDOs received from the source.
   std::vector<PDO> pdos_;
   uint8_t n_pdos_{0};
   optional<uint8_t> selected_pdo_idx_;
-  // uint8_t selected_pdo_idx_{-1};
 
   // Interrupt pin.
   InternalGPIOPin *int_pin_{nullptr};

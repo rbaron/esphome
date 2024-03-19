@@ -3,6 +3,7 @@
 #include "esphome/core/log.h"
 #include "esphome/components/fusb302/pdo.h"
 #include "esphome/components/fusb302/regs.h"
+#include "esphome/core/hal.h"
 
 // #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
 // #define HAS_BIT(v, b) (HAS_BITS(v, b, 1))
@@ -84,10 +85,10 @@ uint32_t make_pps_rdo(uint8_t pdo_idx, uint16_t voltage_mv, uint16_t current_ma)
   uint32_t rdo = 0;
   rdo |= ((pdo_idx + 1) << 28);  // Object position.
   rdo |= (0x0 << 26);            // Cap mismatch.
-  rdo |= (0x1 << 25);            // USB cap.
-  rdo |= (0x1 << 24);            // No USB suspend.
-  rdo |= (0x0 << 23);            // Unchunked message supported.
-  rdo |= (0x0 << 22);            // EPR cap.
+  // rdo |= (0x1 << 25);            // USB cap.
+  // rdo |= (0x1 << 24);            // No USB suspend.
+  // rdo |= (0x0 << 23);            // Unchunked message supported.
+  // rdo |= (0x0 << 22);  // EPR cap.
   rdo |= (voltage_mv / 20) << 9;
   rdo |= (current_ma / 50) << 0;
   return rdo;
@@ -175,17 +176,22 @@ void FUSB302::setup() {
     FUSB302_FAIL("Failed to write to CONTROL1");
     return;
   }
-  // Reset PD logic.
-  if (!this->write_byte(REG_RESET, 0x02)) {
-    FUSB302_FAIL("Failed to write to RESET");
-    return;
-  }
 
   // Enable auto GoodCRC response and TXCC1, plus keep the revision 2.0 of the GoodCRC ack packet.
   if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
     FUSB302_FAIL("Failed to write to SWITCHES1");
     return;
   }
+
+  // Reset PD logic.
+  if (!this->write_byte(REG_RESET, 0x02)) {
+    FUSB302_FAIL("Failed to write to RESET");
+    return;
+  }
+
+  // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We will disable
+  // it once the negotiation is complete.
+  high_freq_loop_req_.start();
 }
 
 void FUSB302::loop() {
@@ -206,19 +212,23 @@ void FUSB302::update() {}
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
 
 bool FUSB302::process_interrupt() {
+  // Reading a lot here may cause timing issues.
+
   // Read interrupt.
-  uint8_t interrupt;
-  if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
-    ESP_LOGW(TAG, "Failed to read interrupt");
-    return false;
-  }
+  // uint8_t interrupt;
+  // if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
+  //   ESP_LOGW(TAG, "Failed to read interrupt");
+  //   return false;
+  // }
   // ESP_LOGD(TAG, "Interrupt: 0x%02X", interrupt);
 
-  uint8_t status0, status1;
-  if (this->read_register(REG_STATUS0, &status0, 1)) {
-    ESP_LOGW(TAG, "Failed to read status0");
-    return false;
-  }
+  // uint8_t status0;
+  // if (this->read_register(REG_STATUS0, &status0, 1)) {
+  //   ESP_LOGW(TAG, "Failed to read status0");
+  //   return false;
+  // }
+
+  uint8_t status1;
   if (this->read_register(REG_STATUS1, &status1, 1)) {
     ESP_LOGW(TAG, "Failed to read status1");
     return false;
@@ -261,8 +271,8 @@ bool FUSB302::read_fifo() {
     ESP_LOGE(TAG, "Failed to read header");
     return false;
   }
-  ESP_LOGD(TAG, "Header: 0x%04X", header);
-
+  // ESP_LOGD(TAG, "Header: 0x%04X", header);
+  fifo_msg_.header = header;
   fifo_msg_.n_objs = (header >> 12) & 0x07;
   fifo_msg_.msg_type = header & 0xf;
 
@@ -291,6 +301,11 @@ bool FUSB302::read_fifo() {
   return true;
 }
 
+// TODO: handle more messages;
+// - Error?
+// - Soft reset?
+// - Hard reset?
+// - Overheat?
 bool FUSB302::handle_msg() {
   if (fifo_msg_.n_objs == 0) {
     // ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
@@ -320,6 +335,10 @@ bool FUSB302::handle_msg() {
     // Source_Capabilities.
     if (fifo_msg_.msg_type == 0x01) {
       enter_state(State::RECEIVED_CAPS);
+
+      // Extract the PD spec revision.
+      pd_spec_ = (fifo_msg_.header >> 6) & 0x3;
+
       // We have to be fast to send this response (ideally < 10ms). Otherwise the power supply will hard reset. So
       // better to avoid a state loop and just do it right away.
       if (!this->parse_pdos(fifo_msg_.n_objs, fifo_msg_.objs)) {
@@ -351,6 +370,7 @@ bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
       ESP_LOGE(TAG, "Failed to parse PDO 0x%08X", pdos[i]);
       return false;
     }
+    // log_pdo(pdo);
     // Select the first compatible PDO (fixed should be listed first).
     if (!selected_pdo_idx_.has_value() && is_pdo_compatible(pdo, power_requirement_)) {
       selected_pdo_idx_ = i;
@@ -401,13 +421,17 @@ bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
 
   uint16_t header = 0;
   // Number of objects -- 1.
-  header |= 0x1 << 12;
+  header |= (0x1 << 12);
   // Spec revision -- 2.0.
-  header |= 0x1 << 6;
+  // header |= (0x1 << 6);
+  // Spec revision -- 3.0 (worked with PPS for all adapters).
+  // header |= (0x1 << 7);
+  // Use same spec revision as the source.
+  header |= (pd_spec_ << 6);
   // Message type -- Request.
-  header |= 0x1 << 1;
+  header |= (0x1 << 1);
   // Message ID.
-  header |= (msg_id++) << 9;
+  header |= ((msg_id++) << 9);
 
   // TODO: make this slightly less horrible.
   uint8_t buff[32];
@@ -420,7 +444,7 @@ bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
     ESP_LOGE(TAG, "Failed to write eop to FIFO");
     return false;
   }
-  ESP_LOGD(TAG, "Sent message");
+  // ESP_LOGD(TAG, "Sent message");
   return true;
 }
 
@@ -445,6 +469,9 @@ void FUSB302::enter_state(State state) {
 
   switch (state_) {
     case State::READY: {
+      // We can probably go back to usual loop update frequency.
+      high_freq_loop_req_.stop();
+
       on_pd_negotiation_success_callback_.call(/*success=*/true);
 
       // Do we need to schedule a PPS timer?
