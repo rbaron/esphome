@@ -195,11 +195,6 @@ void FUSB302::setup() {
 }
 
 void FUSB302::loop() {
-  // Unrecoverable failure.
-  if (state_ == State::FAILURE) {
-    return;
-  }
-
   if (!this->process_interrupt()) {
     return;
   }
@@ -241,6 +236,14 @@ bool FUSB302::process_interrupt() {
   // Read FIFO data into fifo_msg_.
   if (!this->read_fifo()) {
     FUSB302_FAIL("Failed to read FIFO");
+    return false;
+  }
+
+  // We still better clear the FIFO even in failure mode, otherwise reset may occur. THis seem to happen for power
+  // adapters that send a lot of vendor defined messages. An alternative would be to set the BIST_MODE bit in the
+  // CONTROL1 register, which flushes the RX buffer automatically.
+  // Unrecoverable failure.
+  if (state_ == State::FAILURE) {
     return false;
   }
 
