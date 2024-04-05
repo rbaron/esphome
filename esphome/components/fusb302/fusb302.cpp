@@ -3,6 +3,7 @@
 #include "esphome/core/log.h"
 #include "esphome/components/fusb302/pdo.h"
 #include "esphome/components/fusb302/regs.h"
+#include "esphome/components/fusb302/timers.h"
 #include "esphome/core/hal.h"
 
 // #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
@@ -21,6 +22,7 @@ static const char *TAG = "fusb302.component";
 
 namespace {
 
+constexpr char kWaitForCapsTimerName[] = "wait_for_caps";
 constexpr char kPPSTimerName[] = "pps_timer";
 constexpr int kPPSTimerIntervalMs = 8000;
 
@@ -259,6 +261,8 @@ void FUSB302::setup() {
   // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We will disable
   // it once the negotiation is complete.
   high_freq_loop_req_.start();
+
+  enter_state(State::WAIT_FOR_CAPABILITIES);
 }
 
 void FUSB302::loop() {
@@ -383,20 +387,21 @@ bool FUSB302::handle_msg() {
       return true;
     } else if (fifo_msg_.msg_type == 0x03) {  // Accept.
       ESP_LOGD(TAG, "Accept message received");
+      enter_state(State::TRANSITION_SINK);
     } else if (fifo_msg_.msg_type == 0x06) {  // PS_RDY.
       ESP_LOGD(TAG, "PS_RDY message received");
 
-      if (state_ == State::REQUESTED_SAFE_5V) {
-        // We've requested Safe5V and received a PS_RDY message it means we didn't have a suitable PDO. Enter failure
-        ESP_LOGE(TAG,
-                 "No compatible PDO found for voltage: %u mV; current: %u mA. Requested the safe 5V so we don't lose "
-                 "power altogether. The available Power Delivery Objects are: ",
-                 power_requirement_.voltage_mv, power_requirement_.current_ma);
-        for (const auto &pdo : pdos_) {
-          log_pdo(pdo);
-        }
-        return false;
-      }
+      // if (state_ == State::REQUESTED_SAFE_5V) {
+      //   // We've requested Safe5V and received a PS_RDY message it means we didn't have a suitable PDO. Enter failure
+      //   ESP_LOGE(TAG,
+      //            "No compatible PDO found for voltage: %u mV; current: %u mA. Requested the safe 5V so we don't lose
+      //            " "power altogether. The available Power Delivery Objects are: ", power_requirement_.voltage_mv,
+      //            power_requirement_.current_ma);
+      //   for (const auto &pdo : pdos_) {
+      //     log_pdo(pdo);
+      //   }
+      //   return false;
+      // }
       enter_state(State::READY);
     } else {
       ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
@@ -404,7 +409,7 @@ bool FUSB302::handle_msg() {
   } else {
     // Source_Capabilities.
     if (fifo_msg_.msg_type == 0x01) {
-      enter_state(State::RECEIVED_CAPS);
+      enter_state(State::EVALUATE_CAPABILITY);
 
       // Extract the PD spec revision.
       pd_spec_ = (fifo_msg_.header >> 6) & 0x3;
@@ -418,6 +423,7 @@ bool FUSB302::handle_msg() {
       if (!this->request_pdo()) {
         return false;
       }
+      enter_state(State::SELECT_CAPABILITY);
       ESP_LOGD(TAG, "Requested PDO: ");
       log_pdo(pdos_[*selected_pdo_idx_]);
     } else {
@@ -453,9 +459,9 @@ bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
     // TODO: check that we actually parsed the PDOs and that PDO 0 is indeed Safe5V.
     // TODO: move this logic to request_pdo.
     selected_pdo_idx_ = 0;
-    enter_state(State::REQUESTED_SAFE_5V);
+    // enter_state(State::REQUESTED_SAFE_5V);
   } else {
-    enter_state(State::REQUESTED_PDO);
+    // enter_state(State::REQUESTED_PDO);
   }
   return true;
 }
@@ -538,6 +544,26 @@ void FUSB302::enter_state(State state) {
   state_ = state;
 
   switch (state_) {
+    case State::WAIT_FOR_CAPABILITIES: {
+      // Start hard reset timer.
+      this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
+        ESP_LOGE(TAG, "Timed out waiting for capabilities. Issuing a hard reset.");
+        for (uint8_t i = 0; i < 3; i++) {
+          if (this->write_byte(REG_CONTROL3, 0b1 << 6)) {
+            ESP_LOGE(TAG, "Hard reset sent.");
+            return;
+          }
+          delay(25);
+        }
+        ESP_LOGE(TAG, "Unable to request hard reset. Nothing else I can do :(");
+      });
+      break;
+    }
+    case State::EVALUATE_CAPABILITY: {
+      // Stop hard reset timer.
+      cancel_timeout(kWaitForCapsTimerName);
+      break;
+    }
     case State::READY: {
       // We can probably go back to usual loop update frequency.
       high_freq_loop_req_.stop();

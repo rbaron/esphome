@@ -13,11 +13,17 @@ namespace esphome {
 namespace fusb302 {
 
 enum class State {
-  INITIALIZING = 0x0,
-  RECEIVED_CAPS,
-  REQUESTED_PDO,
-  REQUESTED_SAFE_5V,
+  STARTUP = 0x0,
+  WAIT_FOR_CAPABILITIES,
+  EVALUATE_CAPABILITY,
+  SELECT_CAPABILITY,
+  TRANSITION_SINK,
   READY,
+
+  // RECEIVED_CAPS,
+  // REQUESTED_PDO,
+  REQUESTED_SAFE_5V,
+  // READY,
   FAILURE,
 };
 
@@ -53,7 +59,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   }
 
  private:
-  State state_{State::INITIALIZING};
+  State state_{State::STARTUP};
 
   HighFrequencyLoopRequester high_freq_loop_req_;
 
