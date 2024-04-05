@@ -101,10 +101,43 @@ void FUSB302::dump_config() {
   LOG_UPDATE_INTERVAL(this);
 }
 
+bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
+  // Enable CCx measuring circuit.
+  if (!this->write_byte(REG_SWITCHES0, 0x03 | (cc_pin << 2))) {
+    FUSB302_FAIL("Failed to write to SWITCHES0");
+    return false;
+  }
+
+  // Wait for the measurement to complete.
+  delay(50);
+
+  // Read the voltage.
+  if (!this->read_byte(REG_STATUS0, voltage_out)) {
+    FUSB302_FAIL("Failed to read voltage");
+    return false;
+  }
+  // We only care for the lower 2 bits.
+  *voltage_out &= 0b11;
+  return true;
+}
+
 void FUSB302::setup() {
   // Reset.
-  if (!this->write_byte(REG_RESET, 0x01)) {
+  // if (!this->write_byte(REG_RESET, 0x01)) {
+  if (!this->write_byte(REG_RESET, 0x03)) {
     FUSB302_FAIL("Failed to write to RESET");
+    return;
+  }
+
+  // Disconnect pull downs.
+  // if (!this->write_byte(REG_SWITCHES0, 0x00)) {
+  //   FUSB302_FAIL("Failed to write to SWITCHES0");
+  //   return;
+  // }
+
+  // Write to POWER.
+  if (!this->write_byte(REG_POWER, 0x0f)) {
+    FUSB302_FAIL("Failed to write to POWER");
     return;
   }
 
@@ -115,12 +148,6 @@ void FUSB302::setup() {
     return;
   } else {
     ESP_LOGV(TAG, "Device id: 0x%04X", device_id);
-  }
-
-  // Write to POWER.
-  if (!this->write_byte(REG_POWER, 0x0f)) {
-    FUSB302_FAIL("Failed to write to POWER");
-    return;
   }
 
   // Enable all interrupts.
@@ -161,8 +188,30 @@ void FUSB302::setup() {
 
   // We know by design that we're connected to CC1. For a general approach this has to be detected.
   // Enable CC1 measuring circuit.
-  if (!this->write_byte(REG_SWITCHES0, 0x07)) {
+  // if (!this->write_byte(REG_SWITCHES0, 0x07)) {
+  //   FUSB302_FAIL("Failed to write to SWITCHES0");
+  //   return;
+  // }
+  uint8_t cc1_voltage, cc2_voltage;
+  if (!this->measure_cc_pin(/*cc_pin=*/1, &cc1_voltage)) {
+    FUSB302_FAIL("Failed to read CC1 voltage");
+    return;
+  }
+  if (!this->measure_cc_pin(/*cc_pin=*/2, &cc2_voltage)) {
+    FUSB302_FAIL("Failed to read CC2 voltage");
+    return;
+  }
+  ESP_LOGW(TAG, "CC1 voltage: %d, CC2 voltage: %d", cc1_voltage, cc2_voltage);
+
+  uint8_t cc_pin = cc1_voltage > cc2_voltage ? 0b01 : 0b10;
+  if (!this->write_byte(REG_SWITCHES0, 0x03 | (cc_pin << 2))) {
     FUSB302_FAIL("Failed to write to SWITCHES0");
+    return;
+  }
+
+  // Enable auto GoodCRC response and TXCCx, plus keep the revision 2.0 of the GoodCRC ack packet.
+  if (!this->write_byte(REG_SWITCHES1, cc_pin | (1 << 2) | (1 << 5))) {
+    FUSB302_FAIL("Failed to write to SWITCHES1");
     return;
   }
 
@@ -178,16 +227,34 @@ void FUSB302::setup() {
   }
 
   // Enable auto GoodCRC response and TXCC1, plus keep the revision 2.0 of the GoodCRC ack packet.
-  if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
-    FUSB302_FAIL("Failed to write to SWITCHES1");
-    return;
-  }
+  // if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
+  //   FUSB302_FAIL("Failed to write to SWITCHES1");
+  //   return;
+  // }
+
+  // Figure out which CC we're connected to.
+  // uint8_t cc1_voltage, cc2_voltage;
+
+  // // Enable CC1 measuring circuit.
+  // if (!this->write_byte(REG_SWITCHES0, 0x07)) {
+  //   FUSB302_FAIL("Failed to write to SWITCHES0");
+  //   return;
+  // }
 
   // Reset PD logic.
   if (!this->write_byte(REG_RESET, 0x02)) {
     FUSB302_FAIL("Failed to write to RESET");
     return;
   }
+
+  // Send a Get_Source_Cap message.
+  // uint32_t get_source_cap = 0;
+  // get_source_cap |= (0x1 << 12);  // Number of objects.
+  // get_source_cap |= (0x1 << 1);   // Message type.
+  // if (!this->send_msg(sizeof(get_source_cap), (uint8_t *) &get_source_cap)) {
+  //   FUSB302_FAIL("Failed to send Get_Source_Cap message");
+  //   return;
+  // }
 
   // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We will disable
   // it once the negotiation is complete.
