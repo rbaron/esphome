@@ -82,6 +82,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   // Methods.
   bool process_interrupt();
+  bool has_fifo_msg();
   bool read_fifo();
   bool handle_msg();
   bool send_msg(uint8_t len, uint8_t *data);

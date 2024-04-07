@@ -15,12 +15,23 @@
     enter_state(State::FAILURE); \
   } while (0)
 
+#define FUSB302_RETRY(expr, expected_ret) \
+  do { \
+    for (uint8_t i = 0; i < kI2CMaxTries; i++) { \
+      if (expr == expected_ret) { \
+        return true; \
+      } \
+      delay(5); \
+      return false; \
+    } \
+  } while (0)
+
 namespace esphome {
 namespace fusb302 {
 
 static const char *TAG = "fusb302.component";
 
-static int last_millis = 0;
+constexpr uint8_t kI2CMaxTries = 3;
 
 namespace {
 
@@ -126,28 +137,21 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 }
 
 void FUSB302::setup() {
-  last_millis = millis();
   // Set up the interrupt pin.
-  if (int_pin_ != nullptr) {
-    ESP_LOGD(TAG, "Setting up interrupt pin");
-    int_pin_->setup();
-    int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
-  } else {
-    ESP_LOGW(TAG, "No interrupt pin set up");
+  if (int_pin_ == nullptr) {
+    FUSB302_FAIL("Required interrupt pin not set");
+    return;
   }
 
+  ESP_LOGD(TAG, "Setting up interrupt pin");
+  int_pin_->setup();
+  int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
+
   // Reset.
-  // if (!this->write_byte(REG_RESET, 0x01)) {
   if (!this->write_byte(REG_RESET, 0x03)) {
     FUSB302_FAIL("Failed to write to RESET");
     return;
   }
-
-  // Disconnect pull downs.
-  // if (!this->write_byte(REG_SWITCHES0, 0x00)) {
-  //   FUSB302_FAIL("Failed to write to SWITCHES0");
-  //   return;
-  // }
 
   // Write to POWER.
   if (!this->write_byte(REG_POWER, 0x0f)) {
@@ -200,12 +204,7 @@ void FUSB302::setup() {
     return;
   }
 
-  // We know by design that we're connected to CC1. For a general approach this has to be detected.
-  // Enable CC1 measuring circuit.
-  // if (!this->write_byte(REG_SWITCHES0, 0x07)) {
-  //   FUSB302_FAIL("Failed to write to SWITCHES0");
-  //   return;
-  // }
+  // Ready CC1 and CC2 voltages to figure out which one we're connected to.
   uint8_t cc1_voltage, cc2_voltage;
   if (!this->measure_cc_pin(/*cc_pin=*/1, &cc1_voltage)) {
     FUSB302_FAIL("Failed to read CC1 voltage");
@@ -240,43 +239,17 @@ void FUSB302::setup() {
     return;
   }
 
-  // Enable auto GoodCRC response and TXCC1, plus keep the revision 2.0 of the GoodCRC ack packet.
-  // if (!this->write_byte(REG_SWITCHES1, (1 << 0) | (1 << 2) | (1 << 5))) {
-  //   FUSB302_FAIL("Failed to write to SWITCHES1");
-  //   return;
-  // }
-
-  // Figure out which CC we're connected to.
-  // uint8_t cc1_voltage, cc2_voltage;
-
-  // // Enable CC1 measuring circuit.
-  // if (!this->write_byte(REG_SWITCHES0, 0x07)) {
-  //   FUSB302_FAIL("Failed to write to SWITCHES0");
-  //   return;
-  // }
-
   // Reset PD logic.
   if (!this->write_byte(REG_RESET, 0x02)) {
     FUSB302_FAIL("Failed to write to RESET");
     return;
   }
 
-  // Send a Get_Source_Cap message.
-  // uint32_t get_source_cap = 0;
-  // get_source_cap |= (0x1 << 12);  // Number of objects.
-  // get_source_cap |= (0x1 << 1);   // Message type.
-  // if (!this->send_msg(sizeof(get_source_cap), (uint8_t *) &get_source_cap)) {
-  //   FUSB302_FAIL("Failed to send Get_Source_Cap message");
-  //   return;
-  // }
-
   // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We will disable
   // it once the negotiation is complete.
   high_freq_loop_req_.start();
 
   enter_state(State::WAIT_FOR_CAPABILITIES);
-
-  last_millis = millis();
 }
 
 void FUSB302::loop() {
@@ -285,125 +258,68 @@ void FUSB302::loop() {
     this->process_interrupt();
     ESP_LOGD(TAG, "Processed interrupt");
   }
-  // if (!this->process_interrupt()) {
-  //   return;
-  // }
-
-  // ESP_LOGW(TAG, "TOOK %d ms", millis() - last_millis);
-  // last_millis = millis();
 }
 
 void FUSB302::update() {}
 
 // Interrupt callback.
-// TODO: set up interrupt handling. Right now we're just polling.
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
 
 bool FUSB302::process_interrupt() {
-  ESP_LOGD(TAG, "Processing interrupt");
   // Reading a lot here may cause timing issues.
+  ESP_LOGD(TAG, "Processing interrupt");
 
-  // Read interrupt -- this will clear the interrupt trigger.
-  // this->interrupt_pending_ = false;
-  // uint8_t interrupt;
-  // if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
-  //   ESP_LOGE(TAG, "Failed to read interrupt");
-  //   return false;
-  // }
-
-  // Clear all interrupts.
-  // uint8_t buf[7];
-  // if (this->read_register(REG_STATUS0A, buf, sizeof(buf))) {
-  // uint8_t buf[5];
-  // if (this->read_register(REG_INTERRUPTA, buf, sizeof(buf))) {
-  //   ESP_LOGE(TAG, "Failed to clear interrupts");
-  //   return false;
-  // }
-
-  // Read INTERRUPTA, INTERRUPTB, and INTERRUPT.
-  uint8_t interrupt;
-  if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
+  // Read interrupt registers -- this will clear the interrupt.
+  // TODO: maybe we can read all of these registers at once.
+  uint8_t interrupt, interrupta, interruptb;
+  if (!this->read_byte(REG_INTERRUPT, &interrupt)) {
     ESP_LOGE(TAG, "Failed to read interrupt");
     return false;
   }
-  uint8_t interrupta;
-  if (this->read_register(REG_INTERRUPTA, &interrupta, 1)) {
+  if (!this->read_byte(REG_INTERRUPTA, &interrupta)) {
     ESP_LOGE(TAG, "Failed to read interrupta");
     return false;
   }
-  uint8_t interruptb;
-  if (this->read_register(REG_INTERRUPTB, &interruptb, 1)) {
+  if (!this->read_byte(REG_INTERRUPTB, &interruptb)) {
     ESP_LOGE(TAG, "Failed to read interruptb");
     return false;
   }
-  volatile uint8_t a;
-  a = interrupt;
-  a = interrupta;
-  a = interruptb;
 
-  // Write INT_MAKS to clear the interrupt.
+  // Reset INT_MASK to clear the interrupt. This shouldn't be necessary?
   if (!this->write_byte(REG_CONTROL0, 0x01 << 5)) {
     ESP_LOGE(TAG, "Failed to clear INT_N");
     return false;
   }
-  // Re enable interrupts.
   if (!this->write_byte(REG_CONTROL0, 0x00 << 5)) {
     ESP_LOGE(TAG, "Failed to clear INT_N");
     return false;
   }
 
-  // TODO: maybe we can read all of these registers at once.
+  while (this->has_fifo_msg()) {
+    // Read FIFO data into fifo_msg_.
+    if (!this->read_fifo()) {
+      ESP_LOGE(TAG, "Failed to read FIFO");
+      return false;
+    }
 
-  // ESP_LOGD(TAG, "Interrupt: 0x%02X", interrupt);
+    // Handle the message if its for us. Under failure we still have to clear the FIFO, but we don't handle the
+    // messages. If the FIFO overflows, the device will reset.
+    if (state_ != State::FAILURE && fifo_msg_.destination == FIFOMsg::Destination::SOP && !handle_msg()) {
+      ESP_LOGE(TAG, "Failed to handle message");
+      return false;
+    }
+  }
 
-  // uint8_t status0;
-  // if (this->read_register(REG_STATUS0, &status0, 1)) {
-  //   ESP_LOGW(TAG, "Failed to read status0");
-  //   return false;
-  // }
+  return true;
+}
 
+bool FUSB302::has_fifo_msg() {
   uint8_t status1;
-  // while (true) {
-  if (this->read_register(REG_STATUS1, &status1, 1)) {
+  if (!this->read_byte(REG_STATUS1, &status1)) {
     ESP_LOGE(TAG, "Failed to read status1");
     return false;
   }
-  // If there's no data to read, we're done.
-  if ((status1 & (1 << 5)) != 0) {
-    return true;
-  }
-
-  // Read FIFO data into fifo_msg_.
-  if (!this->read_fifo()) {
-    // FUSB302_FAIL("Failed to read FIFO");
-    ESP_LOGE(TAG, "Failed to read FIFO");
-    return false;
-  }
-
-  // ESP_LOGW(TAG, "FIFO MSG TYPE IN HEX: 0x%02x", fifo_msg_.msg_type);
-  // We still better clear the FIFO even in failure mode, otherwise reset may occur. THis seem to happen for power
-  // adapters that send a lot of vendor defined messages. An alternative would be to set the BIST_MODE bit in the
-  // CONTROL1 register, which flushes the RX buffer automatically.
-  // Unrecoverable failure.
-  // if (state_ == State::FAILURE) {
-  //   return false;
-  // }
-
-  // Handle the message if its for us.
-  if (fifo_msg_.destination == FIFOMsg::Destination::SOP && !handle_msg()) {
-    // FUSB302_FAIL("Failed to handle message");
-    ESP_LOGE(TAG, "Failed to handle message");
-    return false;
-  }
-  // }
-
-  // // Clear interrupt.
-  // if (this->write_register16(REG_INTERRUPT, &interrupt, 1)) {
-  //   ESP_LOGE(TAG, "Failed to clear interrupt");
-  //   return false;
-  // }
-
-  return true;
+  return (status1 & (1 << 5)) == 0;
 }
 
 bool FUSB302::read_fifo() {
@@ -604,6 +520,8 @@ void FUSB302::maybe_rerequest_pps_pdo() {
       pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
     this->request_pdo();
 
+    enter_state(State::SELECT_CAPABILITY);
+
     // Schedule a new PPS timer.
     this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
   }
@@ -641,7 +559,20 @@ void FUSB302::enter_state(State state) {
       // We can probably go back to usual loop update frequency.
       high_freq_loop_req_.stop();
 
-      on_pd_negotiation_success_callback_.call(/*success=*/true);
+      // Is this the voltage we wanted or a fallback Safe5V?
+      if (selected_pdo_idx_.has_value() && is_pdo_compatible(pdos_[*selected_pdo_idx_], power_requirement_)) {
+        on_pd_negotiation_success_callback_.call(/*success=*/true);
+      } else {
+        on_pd_negotiation_failure_callback_.call(/*success=*/false);
+        ESP_LOGE(TAG,
+                 "No compatible PDO found for voltage: %u mV; current: %u mA. Negotiated the fallback safe 5V. The "
+                 "available Power Delivery Objects are: ",
+                 power_requirement_.voltage_mv, power_requirement_.current_ma);
+        for (const auto &pdo : pdos_) {
+          log_pdo(pdo);
+        }
+        return;
+      }
 
       // Do we need to schedule a PPS timer?
       cancel_timeout(kPPSTimerName);
