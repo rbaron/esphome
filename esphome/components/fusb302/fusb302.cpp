@@ -20,6 +20,8 @@ namespace fusb302 {
 
 static const char *TAG = "fusb302.component";
 
+static int last_millis = 0;
+
 namespace {
 
 constexpr char kWaitForCapsTimerName[] = "wait_for_caps";
@@ -124,6 +126,16 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 }
 
 void FUSB302::setup() {
+  last_millis = millis();
+  // Set up the interrupt pin.
+  if (int_pin_ != nullptr) {
+    ESP_LOGD(TAG, "Setting up interrupt pin");
+    int_pin_->setup();
+    int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
+  } else {
+    ESP_LOGW(TAG, "No interrupt pin set up");
+  }
+
   // Reset.
   // if (!this->write_byte(REG_RESET, 0x01)) {
   if (!this->write_byte(REG_RESET, 0x03)) {
@@ -203,7 +215,7 @@ void FUSB302::setup() {
     FUSB302_FAIL("Failed to read CC2 voltage");
     return;
   }
-  ESP_LOGW(TAG, "CC1 voltage: %d, CC2 voltage: %d", cc1_voltage, cc2_voltage);
+  ESP_LOGD(TAG, "CC1 voltage: %d, CC2 voltage: %d", cc1_voltage, cc2_voltage);
 
   uint8_t cc_pin = cc1_voltage > cc2_voltage ? 0b01 : 0b10;
   if (!this->write_byte(REG_SWITCHES0, 0x03 | (cc_pin << 2))) {
@@ -263,12 +275,22 @@ void FUSB302::setup() {
   high_freq_loop_req_.start();
 
   enter_state(State::WAIT_FOR_CAPABILITIES);
+
+  last_millis = millis();
 }
 
 void FUSB302::loop() {
-  if (!this->process_interrupt()) {
-    return;
+  if (this->interrupt_pending_) {
+    this->interrupt_pending_ = false;
+    this->process_interrupt();
+    ESP_LOGD(TAG, "Processed interrupt");
   }
+  // if (!this->process_interrupt()) {
+  //   return;
+  // }
+
+  // ESP_LOGW(TAG, "TOOK %d ms", millis() - last_millis);
+  // last_millis = millis();
 }
 
 void FUSB302::update() {}
@@ -278,14 +300,60 @@ void FUSB302::update() {}
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
 
 bool FUSB302::process_interrupt() {
+  ESP_LOGD(TAG, "Processing interrupt");
   // Reading a lot here may cause timing issues.
 
-  // Read interrupt.
+  // Read interrupt -- this will clear the interrupt trigger.
+  // this->interrupt_pending_ = false;
   // uint8_t interrupt;
   // if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
-  //   ESP_LOGW(TAG, "Failed to read interrupt");
+  //   ESP_LOGE(TAG, "Failed to read interrupt");
   //   return false;
   // }
+
+  // Clear all interrupts.
+  // uint8_t buf[7];
+  // if (this->read_register(REG_STATUS0A, buf, sizeof(buf))) {
+  // uint8_t buf[5];
+  // if (this->read_register(REG_INTERRUPTA, buf, sizeof(buf))) {
+  //   ESP_LOGE(TAG, "Failed to clear interrupts");
+  //   return false;
+  // }
+
+  // Read INTERRUPTA, INTERRUPTB, and INTERRUPT.
+  uint8_t interrupt;
+  if (this->read_register(REG_INTERRUPT, &interrupt, 1)) {
+    ESP_LOGE(TAG, "Failed to read interrupt");
+    return false;
+  }
+  uint8_t interrupta;
+  if (this->read_register(REG_INTERRUPTA, &interrupta, 1)) {
+    ESP_LOGE(TAG, "Failed to read interrupta");
+    return false;
+  }
+  uint8_t interruptb;
+  if (this->read_register(REG_INTERRUPTB, &interruptb, 1)) {
+    ESP_LOGE(TAG, "Failed to read interruptb");
+    return false;
+  }
+  volatile uint8_t a;
+  a = interrupt;
+  a = interrupta;
+  a = interruptb;
+
+  // Write INT_MAKS to clear the interrupt.
+  if (!this->write_byte(REG_CONTROL0, 0x01 << 5)) {
+    ESP_LOGE(TAG, "Failed to clear INT_N");
+    return false;
+  }
+  // Re enable interrupts.
+  if (!this->write_byte(REG_CONTROL0, 0x00 << 5)) {
+    ESP_LOGE(TAG, "Failed to clear INT_N");
+    return false;
+  }
+
+  // TODO: maybe we can read all of these registers at once.
+
   // ESP_LOGD(TAG, "Interrupt: 0x%02X", interrupt);
 
   // uint8_t status0;
@@ -295,8 +363,9 @@ bool FUSB302::process_interrupt() {
   // }
 
   uint8_t status1;
+  // while (true) {
   if (this->read_register(REG_STATUS1, &status1, 1)) {
-    ESP_LOGW(TAG, "Failed to read status1");
+    ESP_LOGE(TAG, "Failed to read status1");
     return false;
   }
   // If there's no data to read, we're done.
@@ -306,23 +375,27 @@ bool FUSB302::process_interrupt() {
 
   // Read FIFO data into fifo_msg_.
   if (!this->read_fifo()) {
-    FUSB302_FAIL("Failed to read FIFO");
+    // FUSB302_FAIL("Failed to read FIFO");
+    ESP_LOGE(TAG, "Failed to read FIFO");
     return false;
   }
 
+  // ESP_LOGW(TAG, "FIFO MSG TYPE IN HEX: 0x%02x", fifo_msg_.msg_type);
   // We still better clear the FIFO even in failure mode, otherwise reset may occur. THis seem to happen for power
   // adapters that send a lot of vendor defined messages. An alternative would be to set the BIST_MODE bit in the
   // CONTROL1 register, which flushes the RX buffer automatically.
   // Unrecoverable failure.
-  if (state_ == State::FAILURE) {
-    return false;
-  }
+  // if (state_ == State::FAILURE) {
+  //   return false;
+  // }
 
   // Handle the message if its for us.
   if (fifo_msg_.destination == FIFOMsg::Destination::SOP && !handle_msg()) {
-    FUSB302_FAIL("Failed to handle message");
+    // FUSB302_FAIL("Failed to handle message");
+    ESP_LOGE(TAG, "Failed to handle message");
     return false;
   }
+  // }
 
   // // Clear interrupt.
   // if (this->write_register16(REG_INTERRUPT, &interrupt, 1)) {
@@ -386,10 +459,10 @@ bool FUSB302::handle_msg() {
     if (fifo_msg_.msg_type == 0x01) {  // GoodCRC.
       return true;
     } else if (fifo_msg_.msg_type == 0x03) {  // Accept.
-      ESP_LOGD(TAG, "Accept message received");
+      ESP_LOGW(TAG, "Accept message received");
       enter_state(State::TRANSITION_SINK);
     } else if (fifo_msg_.msg_type == 0x06) {  // PS_RDY.
-      ESP_LOGD(TAG, "PS_RDY message received");
+      ESP_LOGW(TAG, "PS_RDY message received");
 
       // if (state_ == State::REQUESTED_SAFE_5V) {
       //   // We've requested Safe5V and received a PS_RDY message it means we didn't have a suitable PDO. Enter failure
@@ -404,7 +477,7 @@ bool FUSB302::handle_msg() {
       // }
       enter_state(State::READY);
     } else {
-      ESP_LOGD(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
+      ESP_LOGW(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
     }
   } else {
     // Source_Capabilities.
@@ -424,10 +497,10 @@ bool FUSB302::handle_msg() {
         return false;
       }
       enter_state(State::SELECT_CAPABILITY);
-      ESP_LOGD(TAG, "Requested PDO: ");
+      // ESP_LOGW(TAG, "Requested PDO: ");
       log_pdo(pdos_[*selected_pdo_idx_]);
     } else {
-      ESP_LOGD(TAG, "Unhandled data message type: 0x%02X", fifo_msg_.msg_type);
+      ESP_LOGW(TAG, "Unhandled data message type: 0x%02X", fifo_msg_.msg_type);
     }
   }
   return true;

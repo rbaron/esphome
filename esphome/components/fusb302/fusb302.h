@@ -78,7 +78,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   // Interrupt pin.
   InternalGPIOPin *int_pin_{nullptr};
-  bool interrupt_pending_{false};
+  volatile bool interrupt_pending_{true};
 
   // Methods.
   bool process_interrupt();
