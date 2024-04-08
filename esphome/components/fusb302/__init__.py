@@ -35,11 +35,11 @@ CONFIG_SCHEMA = (
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(FUSB302),
-            cv.Required(CONF_INTERRUPT_PIN): cv.All(
-                pins.internal_gpio_input_pin_schema
-            ),
             cv.Required(CONF_VOLTAGE): cv.voltage,
             cv.Required(CONF_CURRENT): cv.current,
+            cv.Optional(CONF_INTERRUPT_PIN): cv.All(
+                pins.internal_gpio_input_pin_schema
+            ),
             cv.Optional(CONF_ON_PD_NEGOTIATION_SUCCESS): automation.validate_automation(
                 {
                     cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
@@ -66,14 +66,15 @@ async def to_code(config):
     await cg.register_component(var, config)
     await i2c.register_i2c_device(var, config)
 
-    interrupt_pin = await cg.gpio_pin_expression(config[CONF_INTERRUPT_PIN])
-    cg.add(var.set_interrupt_pin(interrupt_pin))
     cg.add(
         var.set_power_requirement(
             1000 * config[CONF_VOLTAGE], 1000 * config[CONF_CURRENT]
         )
     )
-    # cg.add(var.set_update_interval(config[CONF_UPDATE_INTERVAL]))
+
+    if CONF_INTERRUPT_PIN in config:
+        interrupt_pin = await cg.gpio_pin_expression(config[CONF_INTERRUPT_PIN])
+        cg.add(var.set_interrupt_pin(interrupt_pin))
 
     if CONF_VBUS_VOLTAGE in config:
         sens = await sensor.new_sensor(config[CONF_VBUS_VOLTAGE])

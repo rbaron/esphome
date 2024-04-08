@@ -31,11 +31,11 @@ PDO parse_pdo(uint32_t data) {
       pdo.parsed = true;
       return pdo;
     } else {
-      ESP_LOGW(TAG, "Unsupported augmented PDO type: %d", pdo.augmented.type);
+      ESP_LOGW(TAG, "Unsupported augmented PDO type: %d", static_cast<int>(pdo.augmented.type));
       return pdo;
     }
   }
-  ESP_LOGW(TAG, "Unsupported PDO type: %d", pdo.type);
+  ESP_LOGW(TAG, "Unsupported PDO type: %d", static_cast<int>(pdo.type));
   return pdo;
 }
 
@@ -50,7 +50,7 @@ bool is_pdo_compatible(const PDO &pdo, const PowerRequirement &power_requirement
              pdo.augmented.spr_pps.max_current_ma >= power_requirement.current_ma;
     }
   }
-  ESP_LOGW(TAG, "Unsupported PDO type: %d, assuming not compatible", pdo.type);
+  ESP_LOGW(TAG, "Unsupported PDO type: %d, assuming not compatible", static_cast<int>(pdo.type));
   return false;
 }
 
@@ -65,7 +65,7 @@ void log_pdo(const PDO &pdo) {
       ESP_LOGI(TAG, "Augmented SPR_PPS PDO: %d - %d mV, %d mA", pdo.augmented.spr_pps.min_voltage_mv,
                pdo.augmented.spr_pps.max_voltage_mv, pdo.augmented.spr_pps.max_current_ma);
     } else {
-      ESP_LOGW(TAG, "Unsupported augmented PDO type: %d", pdo.augmented.type);
+      ESP_LOGW(TAG, "Unsupported augmented PDO type: %d", static_cast<int>(pdo.augmented.type));
     }
   } else {
     ESP_LOGW(TAG, "Unsupported PDO type");

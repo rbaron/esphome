@@ -5,6 +5,7 @@
 #include "esphome/components/fusb302/regs.h"
 #include "esphome/components/fusb302/timers.h"
 #include "esphome/core/hal.h"
+#include "Wire.h"
 
 // #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
 // #define HAS_BIT(v, b) (HAS_BITS(v, b, 1))
@@ -32,12 +33,13 @@ namespace fusb302 {
 static const char *TAG = "fusb302.component";
 
 constexpr uint8_t kI2CMaxTries = 3;
+constexpr uint8_t kI2CSLeepBetweenAttemptsMS = 100;
 
 namespace {
 
 constexpr char kWaitForCapsTimerName[] = "wait_for_caps";
 constexpr char kPPSTimerName[] = "pps_timer";
-constexpr int kPPSTimerIntervalMs = 8000;
+constexpr int kPPSTimerIntervalMs = 7000;
 
 void dump_rdo(uint32_t *rdo_data, const PDO *pdos) {
   uint8_t obj_pos = (*rdo_data >> 28) & 0x7;
@@ -138,14 +140,13 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 
 void FUSB302::setup() {
   // Set up the interrupt pin.
-  if (int_pin_ == nullptr) {
-    FUSB302_FAIL("Required interrupt pin not set");
-    return;
+  if (int_pin_ != nullptr) {
+    // FUSB302_FAIL("Required interrupt pin not set");
+    // return;
+    ESP_LOGD(TAG, "Setting up interrupt pin");
+    int_pin_->setup();
+    int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
   }
-
-  ESP_LOGD(TAG, "Setting up interrupt pin");
-  int_pin_->setup();
-  int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
 
   // Reset.
   if (!this->write_byte(REG_RESET, 0x03)) {
@@ -168,11 +169,13 @@ void FUSB302::setup() {
     ESP_LOGV(TAG, "Device id: 0x%04X", device_id);
   }
 
-  // Enable all interrupts.
-  if (!this->write_byte(REG_MASK1, 0x00)) {
+  // Mask all these interrupts.
+  if (!this->write_byte(REG_MASK1, 0xff)) {
     FUSB302_FAIL("Failed to write to MASK1");
     return;
   }
+
+  // Enable all these interrupts.
   if (!this->write_byte(REG_MASKA, 0x00)) {
     FUSB302_FAIL("Failed to write to MASKA");
     return;
@@ -253,11 +256,19 @@ void FUSB302::setup() {
 }
 
 void FUSB302::loop() {
-  if (this->interrupt_pending_) {
+  LockGuard lock(mutex_);
+  // if (state_ == State::READY) {
+  //   delay(1);
+  // }
+  // Continuously poll if no interrupt pin is set, or if an interrupt is pending.
+  if (this->int_pin_ == nullptr || this->interrupt_pending_) {
     this->interrupt_pending_ = false;
     this->process_interrupt();
     ESP_LOGD(TAG, "Processed interrupt");
   }
+  // if (state_ == State::READY) {
+  //   delay(1);
+  // }
 }
 
 void FUSB302::update() {}
@@ -271,31 +282,42 @@ bool FUSB302::process_interrupt() {
 
   // Read interrupt registers -- this will clear the interrupt.
   // TODO: maybe we can read all of these registers at once.
-  uint8_t interrupt, interrupta, interruptb;
-  if (!this->read_byte(REG_INTERRUPT, &interrupt)) {
-    ESP_LOGE(TAG, "Failed to read interrupt");
+  // uint8_t interrupt, interrupta, interruptb;
+  // if (!this->read_byte_retry(REG_INTERRUPT, &interrupt)) {
+  //   ESP_LOGE(TAG, "Failed to read interrupt");
+  //   return false;
+  // }
+  // if (!this->read_byte_retry(REG_INTERRUPTA, &interrupta)) {
+  //   ESP_LOGE(TAG, "Failed to read interrupta");
+  //   return false;
+  // }
+  // if (!this->read_byte_retry(REG_INTERRUPTB, &interruptb)) {
+  //   ESP_LOGE(TAG, "Failed to read interruptb");
+  //   return false;
+  // }
+
+  // Read all interrupt registers.
+  volatile uint8_t buf[7];
+  i2c::ErrorCode err;
+  if (err = this->read_register_retry(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true)) {
+    ESP_LOGE(TAG, "Failed to read reg. Error: %d", err);
     return false;
-  }
-  if (!this->read_byte(REG_INTERRUPTA, &interrupta)) {
-    ESP_LOGE(TAG, "Failed to read interrupta");
-    return false;
-  }
-  if (!this->read_byte(REG_INTERRUPTB, &interruptb)) {
-    ESP_LOGE(TAG, "Failed to read interruptb");
-    return false;
+    // } else {
+    //   ESP_LOGW(TAG, "Reg: 0x%04X", buf[0]);
   }
 
-  // Reset INT_MASK to clear the interrupt. This shouldn't be necessary?
-  if (!this->write_byte(REG_CONTROL0, 0x01 << 5)) {
-    ESP_LOGE(TAG, "Failed to clear INT_N");
-    return false;
-  }
-  if (!this->write_byte(REG_CONTROL0, 0x00 << 5)) {
-    ESP_LOGE(TAG, "Failed to clear INT_N");
-    return false;
-  }
+  // // Reset INT_MASK to clear the interrupt. This shouldn't be necessary?
+  // if (!this->write_byte_retry(REG_CONTROL0, 0x01 << 5)) {
+  //   ESP_LOGE(TAG, "Failed to clear INT_N");
+  //   return false;
+  // }
+  // if (!this->write_byte_retry(REG_CONTROL0, 0x00 << 5)) {
+  //   ESP_LOGE(TAG, "Failed to clear INT_N");
+  //   return false;
+  // }
 
   while (this->has_fifo_msg()) {
+    delay(1);
     // Read FIFO data into fifo_msg_.
     if (!this->read_fifo()) {
       ESP_LOGE(TAG, "Failed to read FIFO");
@@ -315,7 +337,7 @@ bool FUSB302::process_interrupt() {
 
 bool FUSB302::has_fifo_msg() {
   uint8_t status1;
-  if (!this->read_byte(REG_STATUS1, &status1)) {
+  if (!this->read_byte_retry(REG_STATUS1, &status1)) {
     ESP_LOGE(TAG, "Failed to read status1");
     return false;
   }
@@ -323,42 +345,34 @@ bool FUSB302::has_fifo_msg() {
 }
 
 bool FUSB302::read_fifo() {
-  uint8_t rx_token;
-  if (!this->read_byte(REG_FIFOS, &rx_token)) {
-    ESP_LOGE(TAG, "Failed to read FIFO");
-    return false;
-  }
-
-  uint16_t header;
-  if (this->read_register(REG_FIFOS, (uint8_t *) &header, 2)) {
-    ESP_LOGE(TAG, "Failed to read header");
+  uint8_t buf[3];
+  if (this->read_register_retry(REG_FIFOS, buf, sizeof(buf))) {
+    ESP_LOGE(TAG, "Failed to read FIFO rx token and header");
     return false;
   }
   // ESP_LOGD(TAG, "Header: 0x%04X", header);
-  fifo_msg_.header = header;
-  fifo_msg_.n_objs = (header >> 12) & 0x07;
-  fifo_msg_.msg_type = header & 0xf;
+  fifo_msg_.header = buf[2] << 8 | buf[1];
+  fifo_msg_.n_objs = (fifo_msg_.header >> 12) & 0x07;
+  fifo_msg_.msg_type = fifo_msg_.header & 0xf;
 
   if (fifo_msg_.n_objs > FUSB302_MAX_PDOS) {
     ESP_LOGE(TAG, "Too many objects in message of type %d: %d", fifo_msg_.msg_type, fifo_msg_.n_objs);
     return false;
   }
 
-  // Read objects.
-  for (uint8_t i = 0; i < fifo_msg_.n_objs; i++) {
-    if (this->read_register(REG_FIFOS, (uint8_t *) fifo_msg_.objs + 4 * i, 4)) {
-      ESP_LOGE(TAG, "Failed to read object %d", i);
-      return false;
-    }
-  }
-
-  uint32_t crc;
-  // Discard CRC.
-  if (this->read_register(REG_FIFOS, (uint8_t *) &crc, sizeof(crc))) {
-    ESP_LOGE(TAG, "Failed to read CRC");
+  uint8_t obj_buff[4 * FUSB302_MAX_PDOS + 4];
+  if (this->read_register_retry(REG_FIFOS, obj_buff, 4 * fifo_msg_.n_objs + 4)) {
+    ESP_LOGE(TAG, "Failed to read objects");
     return false;
   }
 
+  // Write into fifo_msg_.
+  for (uint8_t i = 0; i < fifo_msg_.n_objs; i++) {
+    fifo_msg_.objs[i] =
+        (obj_buff[4 * i + 3] << 24) | (obj_buff[4 * i + 2] << 16) | (obj_buff[4 * i + 1] << 8) | obj_buff[4 * i];
+  }
+
+  uint8_t rx_token = buf[0];
   fifo_msg_.destination = ((rx_token >> 4) & 0x0e) == 0x0e ? FIFOMsg::Destination::SOP : FIFOMsg::Destination::UNKNOWN;
 
   return true;
@@ -379,18 +393,6 @@ bool FUSB302::handle_msg() {
       enter_state(State::TRANSITION_SINK);
     } else if (fifo_msg_.msg_type == 0x06) {  // PS_RDY.
       ESP_LOGW(TAG, "PS_RDY message received");
-
-      // if (state_ == State::REQUESTED_SAFE_5V) {
-      //   // We've requested Safe5V and received a PS_RDY message it means we didn't have a suitable PDO. Enter failure
-      //   ESP_LOGE(TAG,
-      //            "No compatible PDO found for voltage: %u mV; current: %u mA. Requested the safe 5V so we don't lose
-      //            " "power altogether. The available Power Delivery Objects are: ", power_requirement_.voltage_mv,
-      //            power_requirement_.current_ma);
-      //   for (const auto &pdo : pdos_) {
-      //     log_pdo(pdo);
-      //   }
-      //   return false;
-      // }
       enter_state(State::READY);
     } else {
       ESP_LOGW(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
@@ -464,7 +466,7 @@ bool FUSB302::request_pdo() {
   } else if (pdo.type == PDO::Type::AUGMENTED && pdo.augmented.type == PDO::Augmented::Type::SPR_PPS) {
     request = make_pps_rdo(*selected_pdo_idx_, power_requirement_.voltage_mv, power_requirement_.current_ma);
   } else {
-    ESP_LOGE(TAG, "Unsupported PDO type: %d", pdo.type);
+    ESP_LOGE(TAG, "Unsupported PDO type: %d", static_cast<int>(pdo.type));
     return false;
   }
 
@@ -481,7 +483,9 @@ bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
   // Truncate to 3 bits (same as % 8).
   msg_id &= 0x7;
 
-  const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, 0x80 | (len + static_cast<uint8_t>(2))};
+  uint8_t last = 0x80 | (len + 2);
+  const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, last};
+  // static_cast<uint8_t>(0x80) | (static_cast<uint8_t>(len) + static_cast<uint8_t>(2))};
   const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
 
   uint16_t header = 0;
@@ -505,25 +509,30 @@ bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
   memcpy(buff + sizeof(sop) + sizeof(header), data, len);
   memcpy(buff + sizeof(sop) + sizeof(header) + len, eop, sizeof(eop));
 
-  if (this->write_register(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
+  if (this->write_register_retry(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
     ESP_LOGE(TAG, "Failed to write eop to FIFO");
-    return false;
+    // return false;
   }
   // ESP_LOGD(TAG, "Sent message");
   return true;
 }
 
 void FUSB302::maybe_rerequest_pps_pdo() {
-  ESP_LOGD(TAG, "Maybe rerequesting PPS PDO. State is: %d", state_);
-  if (state_ == State::READY && selected_pdo_idx_.has_value() &&
-      pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
+  LockGuard lock(mutex_);
+  ESP_LOGW(TAG, "Maybe rerequesting PPS PDO. State is: %d", static_cast<int>(state_));
+  // if (state_ == State::READY && selected_pdo_idx_.has_value() &&
+  if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
       pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
+    ESP_LOGW(TAG, "Ok! Re-requesting PPS PDO.");
     this->request_pdo();
 
     enter_state(State::SELECT_CAPABILITY);
 
+    ESP_LOGW(TAG, "Done re-requesting PDO. Re-scheduling PPS timer");
     // Schedule a new PPS timer.
     this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
+  } else {
+    ESP_LOGE(TAG, "Not in PPS mode!");
   }
 }
 
@@ -540,7 +549,7 @@ void FUSB302::enter_state(State state) {
       this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
         ESP_LOGE(TAG, "Timed out waiting for capabilities. Issuing a hard reset.");
         for (uint8_t i = 0; i < 3; i++) {
-          if (this->write_byte(REG_CONTROL3, 0b1 << 6)) {
+          if (this->write_byte_retry(REG_CONTROL3, 0b1 << 6)) {
             ESP_LOGE(TAG, "Hard reset sent.");
             return;
           }
@@ -590,6 +599,67 @@ void FUSB302::enter_state(State state) {
     default:
       break;
   }
+}
+
+i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, size_t len, bool stop) {
+  return this->read_register(a_register, data, len, stop);
+  // i2c::ErrorCode error;
+  // for (uint8_t i = 0; i < kI2CMaxTries; i++) {
+  //   if ((error = this->read_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
+  //     break;
+  //   }
+  //   ESP_LOGW(TAG, "Failed to read register 0x%02x with error %d. Retrying...", a_register, error);
+  //   delay(kI2CSLeepBetweenAttemptsMS);
+  // }
+  // if (error != i2c::ErrorCode::ERROR_OK) {
+  //   ESP_LOGE(TAG, "Exceeded max retries for reading register 0x%02x. Giving up.", a_register);
+  // }
+  // delay(1);
+  // return error;
+
+  // Wire.beginTransmission(0x22);
+  // Wire.write(a_register);
+  // Wire.endTransmission();
+  // Wire.requestFrom(0x22, len);
+  // while (Wire.available() && len > 0) {
+  //   *data++ = Wire.read();
+  //   len--;
+  // }
+  // return len == 0 ? i2c::ERROR_OK : i2c::ERROR_UNKNOWN;
+}
+
+i2c::ErrorCode FUSB302::write_register_retry(uint8_t a_register, const uint8_t *data, size_t len, bool stop) {
+  return this->write_register(a_register, data, len, stop);
+  // i2c::ErrorCode error;
+  // for (uint8_t i = 0; i < kI2CMaxTries; i++) {
+  //   if ((error = this->write_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
+  //     break;
+  //   }
+  //   ESP_LOGW(TAG, "Failed to write register 0x%02x with error %d. Retrying...", a_register, error);
+  //   delay(kI2CSLeepBetweenAttemptsMS);
+  // }
+  // if (error != i2c::ErrorCode::ERROR_OK) {
+  //   ESP_LOGE(TAG, "Exceeded max retries for writing register 0x%02x. Giving up.", a_register);
+  // }
+  // delay(1);
+  // return error;
+
+  // Wire.beginTransmission(0x22);
+  // Wire.write(a_register);
+  // while (len > 0) {
+  //   Wire.write(*data++);
+  //   len--;
+  // }
+  // Wire.endTransmission();
+  // return i2c::ERROR_OK;
+}
+
+bool FUSB302::read_byte_retry(uint8_t reg, uint8_t *value, bool stop) {
+  return read_register_retry(reg, value, 1, stop) == i2c::ErrorCode::ERROR_OK;
+}
+
+bool FUSB302::write_byte_retry(uint8_t reg, uint8_t value, bool stop) {
+  return write_register_retry(reg, &value, 1, stop) == i2c::ErrorCode::ERROR_OK;
 }
 
 }  // namespace fusb302
