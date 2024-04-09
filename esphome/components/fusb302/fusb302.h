@@ -85,9 +85,10 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   bool has_fifo_msg();
   bool read_fifo();
   bool handle_msg();
-  bool send_msg(uint8_t len, uint8_t *data);
+  bool send_msg(uint8_t msg_type, uint8_t len, uint8_t *data);
   bool parse_pdos(uint8_t n_pdos, uint32_t *pdos);
   bool request_pdo();
+  bool send_soft_reset();
   bool measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out);
   void maybe_rerequest_pps_pdo();
 
@@ -105,10 +106,18 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   // Handles interrupts.
   static void ISR(FUSB302 *instance);
 
+  // Soft reset watchdog.
+  static void Watchdog(FUSB302 *instance);
+
+  // Test.
+  int soft_reset_test_ = 1;
+
   // sensor::Sensor *vbus_voltage_sensor_{nullptr};
 
   CallbackManager<void(bool)> on_pd_negotiation_success_callback_{};
   CallbackManager<void(bool)> on_pd_negotiation_failure_callback_{};
+
+  static void task(void *arg);
 };
 
 }  // namespace fusb302

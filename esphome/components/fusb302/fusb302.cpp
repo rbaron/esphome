@@ -4,8 +4,12 @@
 #include "esphome/components/fusb302/pdo.h"
 #include "esphome/components/fusb302/regs.h"
 #include "esphome/components/fusb302/timers.h"
+#include "esphome/components/fusb302/crc32.h"
 #include "esphome/core/hal.h"
 #include "Wire.h"
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
 // #define HAS_BIT(v, b) (HAS_BITS(v, b, 1))
@@ -40,6 +44,9 @@ namespace {
 constexpr char kWaitForCapsTimerName[] = "wait_for_caps";
 constexpr char kPPSTimerName[] = "pps_timer";
 constexpr int kPPSTimerIntervalMs = 7000;
+
+constexpr char kSoftResetWatchdogTimerName[] = "soft_watchdog";
+constexpr int kSoftResetWatchdogIntervalMs = 250;
 
 void dump_rdo(uint32_t *rdo_data, const PDO *pdos) {
   uint8_t obj_pos = (*rdo_data >> 28) & 0x7;
@@ -253,22 +260,23 @@ void FUSB302::setup() {
   high_freq_loop_req_.start();
 
   enter_state(State::WAIT_FOR_CAPABILITIES);
+
+  // xTaskCreate(FUSB302::task, "fusb302_task", 4096, this, 1, nullptr);
+  // xTaskCreatePinnedToCore(FUSB302::task, "fusb302_task", 4 * 4096, this, 1, nullptr, 1);
+
+  // xTaskCre
+
+  this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
 }
 
 void FUSB302::loop() {
   LockGuard lock(mutex_);
-  // if (state_ == State::READY) {
-  //   delay(1);
-  // }
   // Continuously poll if no interrupt pin is set, or if an interrupt is pending.
   if (this->int_pin_ == nullptr || this->interrupt_pending_) {
     this->interrupt_pending_ = false;
     this->process_interrupt();
     ESP_LOGD(TAG, "Processed interrupt");
   }
-  // if (state_ == State::READY) {
-  //   delay(1);
-  // }
 }
 
 void FUSB302::update() {}
@@ -316,6 +324,7 @@ bool FUSB302::process_interrupt() {
   //   return false;
   // }
 
+  // IDEA: if reading FIFO fails, we could end up in an unpredictable state. Maybe we should reset the fifo altogether.
   while (this->has_fifo_msg()) {
     delay(1);
     // Read FIFO data into fifo_msg_.
@@ -345,8 +354,9 @@ bool FUSB302::has_fifo_msg() {
 }
 
 bool FUSB302::read_fifo() {
-  uint8_t buf[3];
-  if (this->read_register_retry(REG_FIFOS, buf, sizeof(buf))) {
+  // RX token (1) + header (2) + MAX_PDOS * 4 + CRC (4).
+  uint8_t buf[1 + 2 + 4 * FUSB302_MAX_PDOS + 4];
+  if (this->read_register_retry(REG_FIFOS, buf, 1 + 2)) {
     ESP_LOGE(TAG, "Failed to read FIFO rx token and header");
     return false;
   }
@@ -360,8 +370,8 @@ bool FUSB302::read_fifo() {
     return false;
   }
 
-  uint8_t obj_buff[4 * FUSB302_MAX_PDOS + 4];
-  if (this->read_register_retry(REG_FIFOS, obj_buff, 4 * fifo_msg_.n_objs + 4)) {
+  // uint8_t obj_buff[4 * FUSB302_MAX_PDOS + 4];
+  if (this->read_register_retry(REG_FIFOS, buf + 3, 4 * fifo_msg_.n_objs + 4)) {
     ESP_LOGE(TAG, "Failed to read objects");
     return false;
   }
@@ -369,11 +379,25 @@ bool FUSB302::read_fifo() {
   // Write into fifo_msg_.
   for (uint8_t i = 0; i < fifo_msg_.n_objs; i++) {
     fifo_msg_.objs[i] =
-        (obj_buff[4 * i + 3] << 24) | (obj_buff[4 * i + 2] << 16) | (obj_buff[4 * i + 1] << 8) | obj_buff[4 * i];
+        (buf[3 + 4 * i + 3] << 24) | (buf[3 + 4 * i + 2] << 16) | (buf[3 + 4 * i + 1] << 8) | buf[3 + 4 * i];
   }
 
   uint8_t rx_token = buf[0];
   fifo_msg_.destination = ((rx_token >> 4) & 0x0e) == 0x0e ? FIFOMsg::Destination::SOP : FIFOMsg::Destination::UNKNOWN;
+
+  uint32_t crc = (buf[3 + 4 * fifo_msg_.n_objs + 3] << 24) | (buf[3 + 4 * fifo_msg_.n_objs + 2] << 16) |
+                 (buf[3 + 4 * fifo_msg_.n_objs + 1] << 8) | buf[3 + 4 * fifo_msg_.n_objs];
+  uint32_t crc_calc = crc32(buf + 1, 2 + 4 * fifo_msg_.n_objs);
+
+  if (crc != crc_calc) {
+    ESP_LOGE(TAG, "CRC mismatch! 0x%08X != 0x%08X", crc, crc_calc);
+    return false;
+  }
+
+  // for (int i = 1; i < 3 + 4 * fifo_msg_.n_objs; i++) {
+  //   ESP_LOGE(TAG, " 0x%02X,", buf[i]);
+  // }
+  // ESP_LOGE(TAG, " EOF,");
 
   return true;
 }
@@ -470,27 +494,47 @@ bool FUSB302::request_pdo() {
     return false;
   }
 
-  if (!this->send_msg(sizeof(request), (uint8_t *) &request)) {
+  if (!this->send_msg(0b10, sizeof(request), (uint8_t *) &request)) {
     ESP_LOGE(TAG, "Failed to send PD request");
     return false;
   }
   return true;
 }
 
-bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
+bool FUSB302::send_soft_reset() {
+  // Try our best to flush the contents for RX and TX fifo.
+  if (!this->write_byte_retry(REG_CONTROL0, 0x1 << 6)) {
+    ESP_LOGE(TAG, "Failed to flush TX FIFO");
+    return false;
+  }
+  if (!this->write_byte_retry(REG_CONTROL1, 0x1 << 2)) {
+    ESP_LOGE(TAG, "Failed to flush TX FIFO");
+    return false;
+  }
+  if (!this->send_msg(0b1101, 0, nullptr)) {
+    ESP_LOGE(TAG, "Failed to send soft reset");
+    return false;
+  }
+  return true;
+}
+
+bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data) {
   static uint8_t msg_id = 0;
 
   // Truncate to 3 bits (same as % 8).
   msg_id &= 0x7;
 
-  uint8_t last = 0x80 | (len + 2);
-  const uint8_t sop[5] = {0x12, 0x12, 0x12, 0x13, last};
-  // static_cast<uint8_t>(0x80) | (static_cast<uint8_t>(len) + static_cast<uint8_t>(2))};
-  const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
+  // uint8_t last = 0x80 | (len + 2);
+  // If we calculate CRC ourselves...
+  uint8_t last = 0x80 | (2 + len + 4);
+  const uint8_t sop[] = {0x12, 0x12, 0x12, 0x13, last};
+  // const uint8_t eop[4] = {0xff, 0x14, 0xfe, 0xa1};
+  const uint8_t eop[] = {0x14, 0xfe, 0xa1};
 
   uint16_t header = 0;
   // Number of objects -- 1.
-  header |= (0x1 << 12);
+  // header |= (0x1 << 12);
+  header |= ((len / sizeof(uint32_t)) << 12);
   // Spec revision -- 2.0.
   // header |= (0x1 << 6);
   // Spec revision -- 3.0 (worked with PPS for all adapters).
@@ -498,18 +542,39 @@ bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
   // Use same spec revision as the source.
   header |= (pd_spec_ << 6);
   // Message type -- Request.
-  header |= (0x1 << 1);
+  // header |= (0x1 << 1);
+  header |= msg_type;
   // Message ID.
   header |= ((msg_id++) << 9);
 
   // TODO: make this slightly less horrible.
-  uint8_t buff[32];
-  memcpy(buff, sop, sizeof(sop));
-  memcpy(buff + sizeof(sop), (uint8_t *) &header, sizeof(header));
-  memcpy(buff + sizeof(sop) + sizeof(header), data, len);
-  memcpy(buff + sizeof(sop) + sizeof(header) + len, eop, sizeof(eop));
+  uint8_t buff[64];
+  uint8_t pos = 0;
+  memcpy(buff + pos, sop, sizeof(sop));
+  pos += sizeof(sop);
+  memcpy(buff + pos, (uint8_t *) &header, sizeof(header));
+  pos += sizeof(header);
+  memcpy(buff + pos, data, len);
+  pos += len;
+  uint32_t crc = crc32(buff + sizeof(sop), sizeof(header) + len);
+  memcpy(buff + pos, &crc, sizeof(crc));
+  pos += sizeof(crc);
+  memcpy(buff + pos, eop, sizeof(eop));
+  pos += sizeof(eop);
 
-  if (this->write_register_retry(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
+  // for (size_t i = sizeof(sop); i < sizeof(sop) + sizeof(header) + len + sizeof(crc); i++) {
+  //   ESP_LOGE(TAG, " 0x%02X,", buff[i]);
+  // }
+
+  // ESP_LOGE(TAG, "Calculated CRC: 0x%08X", crc);
+
+  // memcpy(buff, sop, sizeof(sop));
+  // memcpy(buff + sizeof(sop), (uint8_t *) &header, sizeof(header));
+  // memcpy(buff + sizeof(sop) + sizeof(header), data, len);
+  // memcpy(buff + sizeof(sop) + sizeof(header) + len, eop, sizeof(eop));
+
+  // if (this->write_register_retry(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
+  if (this->write_register_retry(REG_FIFOS, buff, pos)) {
     ESP_LOGE(TAG, "Failed to write eop to FIFO");
     // return false;
   }
@@ -519,6 +584,10 @@ bool FUSB302::send_msg(uint8_t len, uint8_t *data) {
 
 void FUSB302::maybe_rerequest_pps_pdo() {
   LockGuard lock(mutex_);
+
+  // Schedule a new soft reset watchdog timer.
+  this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
+
   ESP_LOGW(TAG, "Maybe rerequesting PPS PDO. State is: %d", static_cast<int>(state_));
   // if (state_ == State::READY && selected_pdo_idx_.has_value() &&
   if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
@@ -660,6 +729,79 @@ bool FUSB302::read_byte_retry(uint8_t reg, uint8_t *value, bool stop) {
 
 bool FUSB302::write_byte_retry(uint8_t reg, uint8_t value, bool stop) {
   return write_register_retry(reg, &value, 1, stop) == i2c::ErrorCode::ERROR_OK;
+}
+
+void FUSB302::task(void *arg) {
+  FUSB302 *instance = static_cast<FUSB302 *>(arg);
+  // LockGuard lock(instance->mutex_);
+  // // if (state_ == State::READY) {
+  // //   delay(1);
+  // // }
+  // // Continuously poll if no interrupt pin is set, or if an interrupt is pending.
+  while (true) {
+    if (instance->int_pin_ == nullptr || instance->interrupt_pending_) {
+      LockGuard lock(instance->mutex_);
+      instance->interrupt_pending_ = false;
+      instance->process_interrupt();
+      ESP_LOGD(TAG, "Processed interrupt");
+    }
+  }
+  // ESP_LOGE(TAG, "Task started!");
+  // while (true) {
+  // }
+}
+
+void FUSB302::Watchdog(FUSB302 *instance) {
+  LockGuard lock(instance->mutex_);
+
+  // If we're in failure, we can't do anything.
+  if (instance->state_ == State::FAILURE) {
+    return;
+  }
+
+  // We will try to fix the issue first, otherwise we will revisit the watchdog.
+  instance->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
+                        [instance]() { instance->Watchdog(instance); });
+
+  // If interrupt is asserted, something is wrong. Could be caused by an error in clearing the interrupt.
+  if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == LOW) {
+    ESP_LOGW(TAG, "Interrupt is asserted. Something is wrong.");
+    // This will re-clear the interrupt.
+    instance->process_interrupt();
+    return;
+  }
+
+  // We're good if we're in READY state.
+  if (instance->soft_reset_test_-- < 0 && instance->state_ == State::READY) {
+    ESP_LOGW(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
+    instance->cancel_timeout(kSoftResetWatchdogTimerName);
+    return;
+  }
+
+  // Send a soft reset.
+  ESP_LOGW(TAG, "Watchdog expected READY state -- sending a soft reset (test: %d).", instance->soft_reset_test_);
+
+  for (uint8_t i = 0; i < kI2CMaxTries; i++) {
+    if (instance->send_soft_reset()) {
+      ESP_LOGE(TAG, "Soft reset sent.");
+      return;
+    }
+    ESP_LOGE(TAG, "Error sending soft reset.");
+    delay(5);
+  }
+
+  // if (instance->state_ == State::FAILURE) {
+  //   return;
+  // }
+  // ESP_LOGW(TAG, "Soft reset watchdog expired. Issuing a soft reset.");
+  // for (uint8_t i = 0; i < 3; i++) {
+  //   if (instance->write_byte_retry(REG_CONTROL3, 0b1 << 7)) {
+  //     ESP_LOGE(TAG, "Soft reset sent.");
+  //     return;
+  //   }
+  //   delay(25);
+  // }
+  // ESP_LOGE(TAG, "Unable to request soft reset. Nothing else I can do :(");
 }
 
 }  // namespace fusb302
