@@ -324,7 +324,8 @@ bool FUSB302::process_interrupt() {
   //   return false;
   // }
 
-  // IDEA: if reading FIFO fails, we could end up in an unpredictable state. Maybe we should reset the fifo altogether.
+  // IDEA: if reading FIFO fails, we could end up in an unpredictable state. Maybe we should reset the fifo altogether
+  // and send a soft reset.
   while (this->has_fifo_msg()) {
     delay(1);
     // Read FIFO data into fifo_msg_.
@@ -418,12 +419,19 @@ bool FUSB302::handle_msg() {
     } else if (fifo_msg_.msg_type == 0x06) {  // PS_RDY.
       ESP_LOGW(TAG, "PS_RDY message received");
       enter_state(State::READY);
+    } else if (fifo_msg_.msg_type == 0x0d) {  // Soft_Reset.
+      // We need to respond in less than 27ms, so no state transition. Send an Accept message right away.
+      // If things go well, the source will send a Source_Capabilities message shortly after.
+      if (!this->send_msg(0b11, 0, nullptr)) {
+        ESP_LOGE(TAG, "Failed to send Accept in response to Soft_Reset");
+        return false;
+      }
+      ESP_LOGE(TAG, "Soft_Reset received, replied with Accept");
     } else {
       ESP_LOGW(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
     }
   } else {
-    // Source_Capabilities.
-    if (fifo_msg_.msg_type == 0x01) {
+    if (fifo_msg_.msg_type == 0x01) {  // Source_Capabilities.
       enter_state(State::EVALUATE_CAPABILITY);
 
       // Extract the PD spec revision.
@@ -671,20 +679,20 @@ void FUSB302::enter_state(State state) {
 }
 
 i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, size_t len, bool stop) {
-  return this->read_register(a_register, data, len, stop);
-  // i2c::ErrorCode error;
-  // for (uint8_t i = 0; i < kI2CMaxTries; i++) {
-  //   if ((error = this->read_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
-  //     break;
-  //   }
-  //   ESP_LOGW(TAG, "Failed to read register 0x%02x with error %d. Retrying...", a_register, error);
-  //   delay(kI2CSLeepBetweenAttemptsMS);
-  // }
-  // if (error != i2c::ErrorCode::ERROR_OK) {
-  //   ESP_LOGE(TAG, "Exceeded max retries for reading register 0x%02x. Giving up.", a_register);
-  // }
-  // delay(1);
-  // return error;
+  // return this->read_register(a_register, data, len, stop);
+  i2c::ErrorCode error;
+  for (uint8_t i = 0; i < kI2CMaxTries; i++) {
+    if ((error = this->read_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
+      break;
+    }
+    ESP_LOGW(TAG, "Failed to read register 0x%02x with error %d. Retrying...", a_register, error);
+    delay(kI2CSLeepBetweenAttemptsMS);
+  }
+  if (error != i2c::ErrorCode::ERROR_OK) {
+    ESP_LOGE(TAG, "Exceeded max retries for reading register 0x%02x. Giving up.", a_register);
+  }
+  delay(1);
+  return error;
 
   // Wire.beginTransmission(0x22);
   // Wire.write(a_register);
@@ -698,20 +706,20 @@ i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, s
 }
 
 i2c::ErrorCode FUSB302::write_register_retry(uint8_t a_register, const uint8_t *data, size_t len, bool stop) {
-  return this->write_register(a_register, data, len, stop);
-  // i2c::ErrorCode error;
-  // for (uint8_t i = 0; i < kI2CMaxTries; i++) {
-  //   if ((error = this->write_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
-  //     break;
-  //   }
-  //   ESP_LOGW(TAG, "Failed to write register 0x%02x with error %d. Retrying...", a_register, error);
-  //   delay(kI2CSLeepBetweenAttemptsMS);
-  // }
-  // if (error != i2c::ErrorCode::ERROR_OK) {
-  //   ESP_LOGE(TAG, "Exceeded max retries for writing register 0x%02x. Giving up.", a_register);
-  // }
-  // delay(1);
-  // return error;
+  // return this->write_register(a_register, data, len, stop);
+  i2c::ErrorCode error;
+  for (uint8_t i = 0; i < kI2CMaxTries; i++) {
+    if ((error = this->write_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
+      break;
+    }
+    ESP_LOGW(TAG, "Failed to write register 0x%02x with error %d. Retrying...", a_register, error);
+    delay(kI2CSLeepBetweenAttemptsMS);
+  }
+  if (error != i2c::ErrorCode::ERROR_OK) {
+    ESP_LOGE(TAG, "Exceeded max retries for writing register 0x%02x. Giving up.", a_register);
+  }
+  delay(1);
+  return error;
 
   // Wire.beginTransmission(0x22);
   // Wire.write(a_register);
