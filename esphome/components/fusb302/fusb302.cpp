@@ -6,7 +6,7 @@
 #include "esphome/components/fusb302/timers.h"
 #include "esphome/components/fusb302/crc32.h"
 #include "esphome/core/hal.h"
-#include "Wire.h"
+// #include "Wire.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -36,8 +36,8 @@ namespace fusb302 {
 
 static const char *TAG = "fusb302.component";
 
-constexpr uint8_t kI2CMaxTries = 3;
-constexpr uint8_t kI2CSLeepBetweenAttemptsMS = 100;
+constexpr uint8_t kI2CMaxTries = 5;
+constexpr uint8_t kI2CSLeepBetweenAttemptsMS = 1;
 
 namespace {
 
@@ -266,7 +266,8 @@ void FUSB302::setup() {
 
   // xTaskCre
 
-  this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
+  // this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this);
+  // });
 }
 
 void FUSB302::loop() {
@@ -307,7 +308,7 @@ bool FUSB302::process_interrupt() {
   // Read all interrupt registers.
   volatile uint8_t buf[7];
   i2c::ErrorCode err;
-  if (err = this->read_register_retry(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true)) {
+  if ((err = this->read_register_retry(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
     ESP_LOGE(TAG, "Failed to read reg. Error: %d", err);
     return false;
     // } else {
@@ -327,7 +328,7 @@ bool FUSB302::process_interrupt() {
   // IDEA: if reading FIFO fails, we could end up in an unpredictable state. Maybe we should reset the fifo altogether
   // and send a soft reset.
   while (this->has_fifo_msg()) {
-    delay(1);
+    // delay(1);
     // Read FIFO data into fifo_msg_.
     if (!this->read_fifo()) {
       ESP_LOGE(TAG, "Failed to read FIFO");
@@ -426,6 +427,7 @@ bool FUSB302::handle_msg() {
         ESP_LOGE(TAG, "Failed to send Accept in response to Soft_Reset");
         return false;
       }
+      // Maybe this takes too long?
       ESP_LOGE(TAG, "Soft_Reset received, replied with Accept");
     } else {
       ESP_LOGW(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
@@ -623,27 +625,33 @@ void FUSB302::enter_state(State state) {
   switch (state_) {
     case State::WAIT_FOR_CAPABILITIES: {
       // Start hard reset timer.
-      this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
-        ESP_LOGE(TAG, "Timed out waiting for capabilities. Issuing a hard reset.");
-        for (uint8_t i = 0; i < 3; i++) {
-          if (this->write_byte_retry(REG_CONTROL3, 0b1 << 6)) {
-            ESP_LOGE(TAG, "Hard reset sent.");
-            return;
-          }
-          delay(25);
-        }
-        ESP_LOGE(TAG, "Unable to request hard reset. Nothing else I can do :(");
-      });
+      // this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
+      //   ESP_LOGE(TAG, "Timed out waiting for capabilities. Issuing a hard reset.");
+      //   for (uint8_t i = 0; i < 3; i++) {
+      //     if (this->write_byte_retry(REG_CONTROL3, 0b1 << 6)) {
+      //       ESP_LOGE(TAG, "Hard reset sent.");
+      //       return;
+      //     }
+      //     delay(25);
+      //   }
+      //   ESP_LOGE(TAG, "Unable to request hard reset. Nothing else I can do :(");
+      // });
+      // Test.
+      this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
+                        [this]() { FUSB302::Watchdog(this); });
       break;
     }
     case State::EVALUATE_CAPABILITY: {
       // Stop hard reset timer.
       cancel_timeout(kWaitForCapsTimerName);
+      // It means we received the capabilities after boot. We can start our watchdog.
+      this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
+                        [this]() { FUSB302::Watchdog(this); });
       break;
     }
     case State::READY: {
       // We can probably go back to usual loop update frequency.
-      high_freq_loop_req_.stop();
+      // high_freq_loop_req_.stop();
 
       // Is this the voltage we wanted or a fallback Safe5V?
       if (selected_pdo_idx_.has_value() && is_pdo_compatible(pdos_[*selected_pdo_idx_], power_requirement_)) {
@@ -685,13 +693,13 @@ i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, s
     if ((error = this->read_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
       break;
     }
-    ESP_LOGW(TAG, "Failed to read register 0x%02x with error %d. Retrying...", a_register, error);
+    ESP_LOGE(TAG, "Failed to read register 0x%02x with error %d. Retrying...", a_register, error);
     delay(kI2CSLeepBetweenAttemptsMS);
   }
   if (error != i2c::ErrorCode::ERROR_OK) {
     ESP_LOGE(TAG, "Exceeded max retries for reading register 0x%02x. Giving up.", a_register);
   }
-  delay(1);
+  // delay(1);
   return error;
 
   // Wire.beginTransmission(0x22);
@@ -712,13 +720,13 @@ i2c::ErrorCode FUSB302::write_register_retry(uint8_t a_register, const uint8_t *
     if ((error = this->write_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
       break;
     }
-    ESP_LOGW(TAG, "Failed to write register 0x%02x with error %d. Retrying...", a_register, error);
+    ESP_LOGE(TAG, "Failed to write register 0x%02x with error %d. Retrying...", a_register, error);
     delay(kI2CSLeepBetweenAttemptsMS);
   }
   if (error != i2c::ErrorCode::ERROR_OK) {
     ESP_LOGE(TAG, "Exceeded max retries for writing register 0x%02x. Giving up.", a_register);
   }
-  delay(1);
+  // delay(1);
   return error;
 
   // Wire.beginTransmission(0x22);
@@ -772,22 +780,24 @@ void FUSB302::Watchdog(FUSB302 *instance) {
                         [instance]() { instance->Watchdog(instance); });
 
   // If interrupt is asserted, something is wrong. Could be caused by an error in clearing the interrupt.
-  if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == LOW) {
-    ESP_LOGW(TAG, "Interrupt is asserted. Something is wrong.");
+  // if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == LOW) {
+  if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == 0) {
+    ESP_LOGE(TAG, "Interrupt is asserted. Something is wrong.");
     // This will re-clear the interrupt.
     instance->process_interrupt();
     return;
   }
 
   // We're good if we're in READY state.
-  if (instance->soft_reset_test_-- < 0 && instance->state_ == State::READY) {
+  if (instance->soft_reset_test_-- <= 0 && instance->state_ == State::READY) {
     ESP_LOGW(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
     instance->cancel_timeout(kSoftResetWatchdogTimerName);
     return;
   }
 
   // Send a soft reset.
-  ESP_LOGW(TAG, "Watchdog expected READY state -- sending a soft reset (test: %d).", instance->soft_reset_test_);
+  ESP_LOGE(TAG, "Watchdog expected READY state (and we're at %d) -- sending a soft reset (test: %d).",
+           static_cast<int>(instance->state_), instance->soft_reset_test_);
 
   for (uint8_t i = 0; i < kI2CMaxTries; i++) {
     if (instance->send_soft_reset()) {
@@ -795,7 +805,7 @@ void FUSB302::Watchdog(FUSB302 *instance) {
       return;
     }
     ESP_LOGE(TAG, "Error sending soft reset.");
-    delay(5);
+    delay(1);
   }
 
   // if (instance->state_ == State::FAILURE) {
