@@ -21,5 +21,14 @@ class OnPDNegotiationFailureTrigger : public Trigger<bool> {
   }
 };
 
+template<typename... Ts> class StartPowerNegotiationAction : public Action<Ts...> {
+ public:
+  explicit StartPowerNegotiationAction(FUSB302 *fusb302) : fusb302_(fusb302) {}
+  void play(Ts... x) override { this->fusb302_->start_power_negotiation(); }
+
+ protected:
+  FUSB302 *fusb302_;
+};
+
 }  // namespace fusb302
 }  // namespace esphome

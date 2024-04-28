@@ -45,6 +45,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   void set_interrupt_pin(InternalGPIOPin *int_pin) { this->int_pin_ = int_pin; }
 
+  void set_start_power_negotiation_on_boot(bool start) { this->start_power_negotiation_on_boot_ = start; }
+
   void set_power_requirement(uint16_t voltage_mv, uint16_t current_ma) {
     this->power_requirement_.voltage_mv = voltage_mv;
     this->power_requirement_.current_ma = current_ma;
@@ -57,6 +59,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   void add_on_pd_negotiation_failure_callback(std::function<void(bool)> &&callback) {
     this->on_pd_negotiation_failure_callback_.add(std::move(callback));
   }
+
+  void start_power_negotiation();
 
  private:
   State state_{State::STARTUP};
@@ -109,10 +113,8 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   // Soft reset watchdog.
   static void Watchdog(FUSB302 *instance);
 
-  // Test.
-  int soft_reset_test_ = 1;
-
-  // sensor::Sensor *vbus_voltage_sensor_{nullptr};
+  bool start_power_negotiation_on_boot_ = true;
+  bool power_negotiation_started_ = false;
 
   CallbackManager<void(bool)> on_pd_negotiation_success_callback_{};
   CallbackManager<void(bool)> on_pd_negotiation_failure_callback_{};

@@ -1,6 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
+from esphome.automation import maybe_simple_id
 from esphome import pins
 from esphome.components import i2c, sensor
 from esphome.const import (
@@ -11,6 +12,7 @@ from esphome.const import (
     CONF_TRIGGER_ID,
 )
 
+CONF_START_POWER_NEGOTIATION_ON_BOOT = "start_power_negotiation_on_boot"
 CONF_ON_PD_NEGOTIATION_SUCCESS = "on_pd_negotiation_success"
 CONF_ON_PD_NEGOTIATION_FAILURE = "on_pd_negotiation_failure"
 
@@ -31,6 +33,10 @@ OnPDNegotiationFailureTrigger = fusb302_ns.class_(
     "OnPDNegotiationFailureTrigger", automation.Trigger.template(cg.bool_)
 )
 
+StartPowerNegotiationAction = fusb302_ns.class_(
+    "StartPowerNegotiationAction", automation.Action
+)
+
 CONFIG_SCHEMA = (
     cv.Schema(
         {
@@ -40,6 +46,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_INTERRUPT_PIN): cv.All(
                 pins.internal_gpio_input_pin_schema
             ),
+            cv.Optional(CONF_START_POWER_NEGOTIATION_ON_BOOT, default=True): cv.boolean,
             cv.Optional(CONF_ON_PD_NEGOTIATION_SUCCESS): automation.validate_automation(
                 {
                     cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
@@ -60,6 +67,12 @@ CONFIG_SCHEMA = (
     .extend(i2c.i2c_device_schema(CONF_I2C_ADDR))
 )
 
+ACTION_SCHEMA = maybe_simple_id(
+    {
+        cv.Required(CONF_ID): cv.use_id(FUSB302),
+    }
+)
+
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
@@ -76,6 +89,12 @@ async def to_code(config):
         interrupt_pin = await cg.gpio_pin_expression(config[CONF_INTERRUPT_PIN])
         cg.add(var.set_interrupt_pin(interrupt_pin))
 
+    cg.add(
+        var.set_start_power_negotiation_on_boot(
+            config[CONF_START_POWER_NEGOTIATION_ON_BOOT]
+        )
+    )
+
     if CONF_VBUS_VOLTAGE in config:
         sens = await sensor.new_sensor(config[CONF_VBUS_VOLTAGE])
         cg.add(var.set_vbus_voltage_sensor(sens))
@@ -87,3 +106,17 @@ async def to_code(config):
     for conf in config.get(CONF_ON_PD_NEGOTIATION_FAILURE, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(bool, "success")], conf)
+
+    # @automation.register_action(
+    #     "fusb302.start_power_negotiation", StartPowerNegotiationAction, ACTION_SCHEMA
+    # )
+
+
+@automation.register_action(
+    "fusb302.start_power_negotiation", StartPowerNegotiationAction, ACTION_SCHEMA
+)
+async def fusb302_start_power_negotiation_to_code(
+    config, action_id, template_arg, args
+):
+    paren = await cg.get_variable(config[CONF_ID])
+    return cg.new_Pvariable(action_id, template_arg, paren)

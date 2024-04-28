@@ -155,6 +155,16 @@ void FUSB302::setup() {
     int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
   }
 
+  // this->set_timeout("delay_setup", 1500, [this]() { this->start_power_negotiation(); });
+  if (this->start_power_negotiation_on_boot_) {
+    this->start_power_negotiation();
+  }
+}
+
+void FUSB302::start_power_negotiation() {
+  // TODO: possibly kill timers (watchdog?).
+  // ESP_LOGW(TAG, "Starting power negotiation (FUSB302 C++)");
+
   // Reset.
   if (!this->write_byte(REG_RESET, 0x03)) {
     FUSB302_FAIL("Failed to write to RESET");
@@ -261,6 +271,8 @@ void FUSB302::setup() {
 
   enter_state(State::WAIT_FOR_CAPABILITIES);
 
+  power_negotiation_started_ = true;
+
   // xTaskCreate(FUSB302::task, "fusb302_task", 4096, this, 1, nullptr);
   // xTaskCreatePinnedToCore(FUSB302::task, "fusb302_task", 4 * 4096, this, 1, nullptr, 1);
 
@@ -273,7 +285,7 @@ void FUSB302::setup() {
 void FUSB302::loop() {
   LockGuard lock(mutex_);
   // Continuously poll if no interrupt pin is set, or if an interrupt is pending.
-  if (this->int_pin_ == nullptr || this->interrupt_pending_) {
+  if ((this->int_pin_ == nullptr || this->interrupt_pending_) && power_negotiation_started_) {
     this->interrupt_pending_ = false;
     this->process_interrupt();
     ESP_LOGD(TAG, "Processed interrupt");
@@ -305,7 +317,7 @@ bool FUSB302::process_interrupt() {
   //   return false;
   // }
 
-  // Read all interrupt registers.
+  // Read all interrupt registers in one go.
   volatile uint8_t buf[7];
   i2c::ErrorCode err;
   if ((err = this->read_register_retry(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
@@ -624,21 +636,12 @@ void FUSB302::enter_state(State state) {
 
   switch (state_) {
     case State::WAIT_FOR_CAPABILITIES: {
-      // Start hard reset timer.
-      // this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
-      //   ESP_LOGE(TAG, "Timed out waiting for capabilities. Issuing a hard reset.");
-      //   for (uint8_t i = 0; i < 3; i++) {
-      //     if (this->write_byte_retry(REG_CONTROL3, 0b1 << 6)) {
-      //       ESP_LOGE(TAG, "Hard reset sent.");
-      //       return;
-      //     }
-      //     delay(25);
-      //   }
-      //   ESP_LOGE(TAG, "Unable to request hard reset. Nothing else I can do :(");
-      // });
-      // Test.
-      this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
-                        [this]() { FUSB302::Watchdog(this); });
+      // Start the SinkWaitCapTimer.
+      this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
+        ESP_LOGE(TAG, "Timed out waiting for capabilities. This is expected if ESPHome was reset, but the SB-C cable "
+                      "remained connected.");
+        FUSB302::Watchdog(this);
+      });
       break;
     }
     case State::EVALUATE_CAPABILITY: {
@@ -789,15 +792,15 @@ void FUSB302::Watchdog(FUSB302 *instance) {
   }
 
   // We're good if we're in READY state.
-  if (instance->soft_reset_test_-- <= 0 && instance->state_ == State::READY) {
+  if (instance->state_ == State::READY) {
     ESP_LOGW(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
     instance->cancel_timeout(kSoftResetWatchdogTimerName);
     return;
   }
 
   // Send a soft reset.
-  ESP_LOGE(TAG, "Watchdog expected READY state (and we're at %d) -- sending a soft reset (test: %d).",
-           static_cast<int>(instance->state_), instance->soft_reset_test_);
+  ESP_LOGE(TAG, "Watchdog expected READY state (and we're at %d) -- sending a soft reset.",
+           static_cast<int>(instance->state_));
 
   for (uint8_t i = 0; i < kI2CMaxTries; i++) {
     if (instance->send_soft_reset()) {
