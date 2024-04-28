@@ -146,25 +146,19 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 }
 
 void FUSB302::setup() {
-  // Set up the interrupt pin.
+  // Set up the interrupt pin if it's set.
   if (int_pin_ != nullptr) {
-    // FUSB302_FAIL("Required interrupt pin not set");
-    // return;
     ESP_LOGD(TAG, "Setting up interrupt pin");
     int_pin_->setup();
     int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
   }
 
-  // this->set_timeout("delay_setup", 1500, [this]() { this->start_power_negotiation(); });
   if (this->start_power_negotiation_on_boot_) {
     this->start_power_negotiation();
   }
 }
 
 void FUSB302::start_power_negotiation() {
-  // TODO: possibly kill timers (watchdog?).
-  // ESP_LOGW(TAG, "Starting power negotiation (FUSB302 C++)");
-
   // Reset.
   if (!this->write_byte(REG_RESET, 0x03)) {
     FUSB302_FAIL("Failed to write to RESET");
@@ -265,21 +259,13 @@ void FUSB302::start_power_negotiation() {
     return;
   }
 
-  // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We will disable
+  // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We may disable
   // it once the negotiation is complete.
   high_freq_loop_req_.start();
 
   enter_state(State::WAIT_FOR_CAPABILITIES);
 
   power_negotiation_started_ = true;
-
-  // xTaskCreate(FUSB302::task, "fusb302_task", 4096, this, 1, nullptr);
-  // xTaskCreatePinnedToCore(FUSB302::task, "fusb302_task", 4 * 4096, this, 1, nullptr, 1);
-
-  // xTaskCre
-
-  // this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this);
-  // });
 }
 
 void FUSB302::loop() {
@@ -298,24 +284,7 @@ void FUSB302::update() {}
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
 
 bool FUSB302::process_interrupt() {
-  // Reading a lot here may cause timing issues.
   ESP_LOGD(TAG, "Processing interrupt");
-
-  // Read interrupt registers -- this will clear the interrupt.
-  // TODO: maybe we can read all of these registers at once.
-  // uint8_t interrupt, interrupta, interruptb;
-  // if (!this->read_byte_retry(REG_INTERRUPT, &interrupt)) {
-  //   ESP_LOGE(TAG, "Failed to read interrupt");
-  //   return false;
-  // }
-  // if (!this->read_byte_retry(REG_INTERRUPTA, &interrupta)) {
-  //   ESP_LOGE(TAG, "Failed to read interrupta");
-  //   return false;
-  // }
-  // if (!this->read_byte_retry(REG_INTERRUPTB, &interruptb)) {
-  //   ESP_LOGE(TAG, "Failed to read interruptb");
-  //   return false;
-  // }
 
   // Read all interrupt registers in one go.
   volatile uint8_t buf[7];
@@ -323,24 +292,9 @@ bool FUSB302::process_interrupt() {
   if ((err = this->read_register_retry(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
     ESP_LOGE(TAG, "Failed to read reg. Error: %d", err);
     return false;
-    // } else {
-    //   ESP_LOGW(TAG, "Reg: 0x%04X", buf[0]);
   }
 
-  // // Reset INT_MASK to clear the interrupt. This shouldn't be necessary?
-  // if (!this->write_byte_retry(REG_CONTROL0, 0x01 << 5)) {
-  //   ESP_LOGE(TAG, "Failed to clear INT_N");
-  //   return false;
-  // }
-  // if (!this->write_byte_retry(REG_CONTROL0, 0x00 << 5)) {
-  //   ESP_LOGE(TAG, "Failed to clear INT_N");
-  //   return false;
-  // }
-
-  // IDEA: if reading FIFO fails, we could end up in an unpredictable state. Maybe we should reset the fifo altogether
-  // and send a soft reset.
   while (this->has_fifo_msg()) {
-    // delay(1);
     // Read FIFO data into fifo_msg_.
     if (!this->read_fifo()) {
       ESP_LOGE(TAG, "Failed to read FIFO");
@@ -374,7 +328,8 @@ bool FUSB302::read_fifo() {
     ESP_LOGE(TAG, "Failed to read FIFO rx token and header");
     return false;
   }
-  // ESP_LOGD(TAG, "Header: 0x%04X", header);
+
+  ESP_LOGD(TAG, "Header: 0x%04X", header);
   fifo_msg_.header = buf[2] << 8 | buf[1];
   fifo_msg_.n_objs = (fifo_msg_.header >> 12) & 0x07;
   fifo_msg_.msg_type = fifo_msg_.header & 0xf;
@@ -384,7 +339,6 @@ bool FUSB302::read_fifo() {
     return false;
   }
 
-  // uint8_t obj_buff[4 * FUSB302_MAX_PDOS + 4];
   if (this->read_register_retry(REG_FIFOS, buf + 3, 4 * fifo_msg_.n_objs + 4)) {
     ESP_LOGE(TAG, "Failed to read objects");
     return false;
@@ -408,22 +362,11 @@ bool FUSB302::read_fifo() {
     return false;
   }
 
-  // for (int i = 1; i < 3 + 4 * fifo_msg_.n_objs; i++) {
-  //   ESP_LOGE(TAG, " 0x%02X,", buf[i]);
-  // }
-  // ESP_LOGE(TAG, " EOF,");
-
   return true;
 }
 
-// TODO: handle more messages;
-// - Error?
-// - Soft reset?
-// - Hard reset?
-// - Overheat?
 bool FUSB302::handle_msg() {
   if (fifo_msg_.n_objs == 0) {
-    // ESP_LOGD(TAG, "No objects in message -- command message. Type: 0x%02X", msg_type);
     if (fifo_msg_.msg_type == 0x01) {  // GoodCRC.
       return true;
     } else if (fifo_msg_.msg_type == 0x03) {  // Accept.
@@ -439,8 +382,7 @@ bool FUSB302::handle_msg() {
         ESP_LOGE(TAG, "Failed to send Accept in response to Soft_Reset");
         return false;
       }
-      // Maybe this takes too long?
-      ESP_LOGE(TAG, "Soft_Reset received, replied with Accept");
+      ESP_LOGW(TAG, "Soft_Reset received, replied with Accept");
     } else {
       ESP_LOGW(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
     }
@@ -462,7 +404,7 @@ bool FUSB302::handle_msg() {
       }
       enter_state(State::SELECT_CAPABILITY);
       // ESP_LOGW(TAG, "Requested PDO: ");
-      log_pdo(pdos_[*selected_pdo_idx_]);
+      // log_pdo(pdos_[*selected_pdo_idx_]);
     } else {
       ESP_LOGW(TAG, "Unhandled data message type: 0x%02X", fifo_msg_.msg_type);
     }
@@ -491,14 +433,9 @@ bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
   }
 
   if (!selected_pdo_idx_.has_value()) {
-    // If we don't find a compatible PDO, we'll just select the first one, which is guaranteed to be Safe5V (I
-    // think?).
+    // If we don't find a compatible PDO, we'll just select the first one, which is guaranteed to be Safe5V as per spec.
     // TODO: check that we actually parsed the PDOs and that PDO 0 is indeed Safe5V.
-    // TODO: move this logic to request_pdo.
     selected_pdo_idx_ = 0;
-    // enter_state(State::REQUESTED_SAFE_5V);
-  } else {
-    // enter_state(State::REQUESTED_PDO);
   }
   return true;
 }
@@ -512,7 +449,7 @@ bool FUSB302::request_pdo() {
   } else if (pdo.type == PDO::Type::AUGMENTED && pdo.augmented.type == PDO::Augmented::Type::SPR_PPS) {
     request = make_pps_rdo(*selected_pdo_idx_, power_requirement_.voltage_mv, power_requirement_.current_ma);
   } else {
-    ESP_LOGE(TAG, "Unsupported PDO type: %d", static_cast<int>(pdo.type));
+    ESP_LOGE(TAG, "Unsupported selected PDO type: %d", static_cast<int>(pdo.type));
     return false;
   }
 
@@ -554,22 +491,12 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data) {
   const uint8_t eop[] = {0x14, 0xfe, 0xa1};
 
   uint16_t header = 0;
-  // Number of objects -- 1.
-  // header |= (0x1 << 12);
+  // Number of objects. Each object is 4 bytes.
   header |= ((len / sizeof(uint32_t)) << 12);
-  // Spec revision -- 2.0.
-  // header |= (0x1 << 6);
-  // Spec revision -- 3.0 (worked with PPS for all adapters).
-  // header |= (0x1 << 7);
-  // Use same spec revision as the source.
   header |= (pd_spec_ << 6);
-  // Message type -- Request.
-  // header |= (0x1 << 1);
   header |= msg_type;
-  // Message ID.
   header |= ((msg_id++) << 9);
 
-  // TODO: make this slightly less horrible.
   uint8_t buff[64];
   uint8_t pos = 0;
   memcpy(buff + pos, sop, sizeof(sop));
@@ -584,23 +511,9 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data) {
   memcpy(buff + pos, eop, sizeof(eop));
   pos += sizeof(eop);
 
-  // for (size_t i = sizeof(sop); i < sizeof(sop) + sizeof(header) + len + sizeof(crc); i++) {
-  //   ESP_LOGE(TAG, " 0x%02X,", buff[i]);
-  // }
-
-  // ESP_LOGE(TAG, "Calculated CRC: 0x%08X", crc);
-
-  // memcpy(buff, sop, sizeof(sop));
-  // memcpy(buff + sizeof(sop), (uint8_t *) &header, sizeof(header));
-  // memcpy(buff + sizeof(sop) + sizeof(header), data, len);
-  // memcpy(buff + sizeof(sop) + sizeof(header) + len, eop, sizeof(eop));
-
-  // if (this->write_register_retry(REG_FIFOS, buff, sizeof(sop) + sizeof(header) + len + sizeof(eop))) {
   if (this->write_register_retry(REG_FIFOS, buff, pos)) {
     ESP_LOGE(TAG, "Failed to write eop to FIFO");
-    // return false;
   }
-  // ESP_LOGD(TAG, "Sent message");
   return true;
 }
 
@@ -611,7 +524,6 @@ void FUSB302::maybe_rerequest_pps_pdo() {
   this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
 
   ESP_LOGW(TAG, "Maybe rerequesting PPS PDO. State is: %d", static_cast<int>(state_));
-  // if (state_ == State::READY && selected_pdo_idx_.has_value() &&
   if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
       pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
     ESP_LOGW(TAG, "Ok! Re-requesting PPS PDO.");
@@ -638,16 +550,16 @@ void FUSB302::enter_state(State state) {
     case State::WAIT_FOR_CAPABILITIES: {
       // Start the SinkWaitCapTimer.
       this->set_timeout(kWaitForCapsTimerName, tTypeCSinkWaitCap, [this]() {
-        ESP_LOGE(TAG, "Timed out waiting for capabilities. This is expected if ESPHome was reset, but the SB-C cable "
+        ESP_LOGE(TAG, "Timed out waiting for capabilities. This is expected if ESPHome was reset, but the USB-C cable "
                       "remained connected.");
         FUSB302::Watchdog(this);
       });
       break;
     }
     case State::EVALUATE_CAPABILITY: {
-      // Stop hard reset timer.
+      // We received capabities. We can cancel the SinkWaitCapTimer timer.
       cancel_timeout(kWaitForCapsTimerName);
-      // It means we received the capabilities after boot. We can start our watchdog.
+      // Start our own watchdog. We should we in the READY state in kSoftResetWatchdogIntervalMs.
       this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
                         [this]() { FUSB302::Watchdog(this); });
       break;
@@ -690,7 +602,6 @@ void FUSB302::enter_state(State state) {
 }
 
 i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, size_t len, bool stop) {
-  // return this->read_register(a_register, data, len, stop);
   i2c::ErrorCode error;
   for (uint8_t i = 0; i < kI2CMaxTries; i++) {
     if ((error = this->read_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
@@ -702,22 +613,10 @@ i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, s
   if (error != i2c::ErrorCode::ERROR_OK) {
     ESP_LOGE(TAG, "Exceeded max retries for reading register 0x%02x. Giving up.", a_register);
   }
-  // delay(1);
   return error;
-
-  // Wire.beginTransmission(0x22);
-  // Wire.write(a_register);
-  // Wire.endTransmission();
-  // Wire.requestFrom(0x22, len);
-  // while (Wire.available() && len > 0) {
-  //   *data++ = Wire.read();
-  //   len--;
-  // }
-  // return len == 0 ? i2c::ERROR_OK : i2c::ERROR_UNKNOWN;
 }
 
 i2c::ErrorCode FUSB302::write_register_retry(uint8_t a_register, const uint8_t *data, size_t len, bool stop) {
-  // return this->write_register(a_register, data, len, stop);
   i2c::ErrorCode error;
   for (uint8_t i = 0; i < kI2CMaxTries; i++) {
     if ((error = this->write_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
@@ -729,17 +628,7 @@ i2c::ErrorCode FUSB302::write_register_retry(uint8_t a_register, const uint8_t *
   if (error != i2c::ErrorCode::ERROR_OK) {
     ESP_LOGE(TAG, "Exceeded max retries for writing register 0x%02x. Giving up.", a_register);
   }
-  // delay(1);
   return error;
-
-  // Wire.beginTransmission(0x22);
-  // Wire.write(a_register);
-  // while (len > 0) {
-  //   Wire.write(*data++);
-  //   len--;
-  // }
-  // Wire.endTransmission();
-  // return i2c::ERROR_OK;
 }
 
 bool FUSB302::read_byte_retry(uint8_t reg, uint8_t *value, bool stop) {
@@ -748,26 +637,6 @@ bool FUSB302::read_byte_retry(uint8_t reg, uint8_t *value, bool stop) {
 
 bool FUSB302::write_byte_retry(uint8_t reg, uint8_t value, bool stop) {
   return write_register_retry(reg, &value, 1, stop) == i2c::ErrorCode::ERROR_OK;
-}
-
-void FUSB302::task(void *arg) {
-  FUSB302 *instance = static_cast<FUSB302 *>(arg);
-  // LockGuard lock(instance->mutex_);
-  // // if (state_ == State::READY) {
-  // //   delay(1);
-  // // }
-  // // Continuously poll if no interrupt pin is set, or if an interrupt is pending.
-  while (true) {
-    if (instance->int_pin_ == nullptr || instance->interrupt_pending_) {
-      LockGuard lock(instance->mutex_);
-      instance->interrupt_pending_ = false;
-      instance->process_interrupt();
-      ESP_LOGD(TAG, "Processed interrupt");
-    }
-  }
-  // ESP_LOGE(TAG, "Task started!");
-  // while (true) {
-  // }
 }
 
 void FUSB302::Watchdog(FUSB302 *instance) {
@@ -783,7 +652,6 @@ void FUSB302::Watchdog(FUSB302 *instance) {
                         [instance]() { instance->Watchdog(instance); });
 
   // If interrupt is asserted, something is wrong. Could be caused by an error in clearing the interrupt.
-  // if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == LOW) {
   if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == 0) {
     ESP_LOGE(TAG, "Interrupt is asserted. Something is wrong.");
     // This will re-clear the interrupt.
@@ -810,19 +678,6 @@ void FUSB302::Watchdog(FUSB302 *instance) {
     ESP_LOGE(TAG, "Error sending soft reset.");
     delay(1);
   }
-
-  // if (instance->state_ == State::FAILURE) {
-  //   return;
-  // }
-  // ESP_LOGW(TAG, "Soft reset watchdog expired. Issuing a soft reset.");
-  // for (uint8_t i = 0; i < 3; i++) {
-  //   if (instance->write_byte_retry(REG_CONTROL3, 0b1 << 7)) {
-  //     ESP_LOGE(TAG, "Soft reset sent.");
-  //     return;
-  //   }
-  //   delay(25);
-  // }
-  // ESP_LOGE(TAG, "Unable to request soft reset. Nothing else I can do :(");
 }
 
 }  // namespace fusb302

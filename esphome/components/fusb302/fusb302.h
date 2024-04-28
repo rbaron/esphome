@@ -84,7 +84,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   InternalGPIOPin *int_pin_{nullptr};
   volatile bool interrupt_pending_{true};
 
-  // Methods.
+  // Private member functions.
   bool process_interrupt();
   bool has_fifo_msg();
   bool read_fifo();
@@ -118,8 +118,6 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   CallbackManager<void(bool)> on_pd_negotiation_success_callback_{};
   CallbackManager<void(bool)> on_pd_negotiation_failure_callback_{};
-
-  static void task(void *arg);
 };
 
 }  // namespace fusb302
