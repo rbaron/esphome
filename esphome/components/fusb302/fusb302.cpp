@@ -21,9 +21,6 @@ namespace fusb302 {
 
 static const char *TAG = "fusb302.component";
 
-constexpr uint8_t kI2CMaxTries = 5;
-constexpr uint8_t kI2CSLeepBetweenAttemptsMS = 1;
-
 namespace {
 
 // Timer names.
@@ -35,25 +32,21 @@ constexpr char kSoftResetWatchdogTimerName[] = "soft_watchdog";
 // Make a Request Data Object for a fixed PDO.
 uint32_t make_fixed_rdo(uint8_t pdo_idx, uint16_t max_current_ma) {
   uint32_t rdo = 0;
-  rdo |= ((pdo_idx + 1) << 28);  // Object position.
-  rdo |= (0x0 << 27);            // Give back flag.
-  rdo |= (0x0 << 26);            // Cap mismatch.
-  rdo |= (0x1 << 25);            // USB cap.
-  rdo |= (0x1 << 24);            // No USB suspend.
-  rdo |= (0x0 << 23);            // Unchunked message supported.
-  rdo |= (0x1 << 22);            // EPR cap.
-  rdo |= (max_current_ma / 10) << 10;
-  rdo |= (max_current_ma / 10) << 0;
+  rdo |= ((pdo_idx + 1) << kFixedRDOObjectPositionShift);
+  rdo |= kFixedRDOUSBCap;
+  rdo |= kFixedRDONoUSBSuspend;
+  rdo |= kFixedRDOEPRCapable;
+  rdo |= (max_current_ma / 10) << kFixedRDOOperatingCurrentShift;
+  rdo |= (max_current_ma / 10) << kFixedRDOMaxCurrentShift;
   return rdo;
 }
 
 // Make a Request Data Object for a PPS PDO.
 uint32_t make_pps_rdo(uint8_t pdo_idx, uint16_t voltage_mv, uint16_t current_ma) {
   uint32_t rdo = 0;
-  rdo |= ((pdo_idx + 1) << 28);  // Object position.
-  rdo |= (0x0 << 26);            // Cap mismatch.
-  rdo |= (voltage_mv / 20) << 9;
-  rdo |= (current_ma / 50) << 0;
+  rdo |= ((pdo_idx + 1) << kPPSRDOObjectPositionShift);
+  rdo |= (voltage_mv / 20) << kPPSRDOOutputVoltageShift;
+  rdo |= (current_ma / 50) << kPPSRDOOutputCurrentShift;
   return rdo;
 }
 
@@ -278,15 +271,15 @@ bool FUSB302::has_fifo_msg() {
 
 bool FUSB302::read_fifo() {
   // RX token (1) + header (2) + extended_header (2) +  4 * MAX_PDOS + CRC (4).
-  uint8_t buf[1 + 2 + 2 + 4 * kMaxPDOS + 4];
-  if (this->read_register(REG_FIFOS, buf, 1 + 2)) {
+  uint8_t buf[sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) + 4 * kMaxPDOS + sizeof(uint32_t)];
+
+  // Read RX token and header.
+  if (this->read_register(REG_FIFOS, buf, sizeof(uint8_t) + sizeof(uint16_t))) {
     ESP_LOGE(TAG, "Failed to read FIFO rx token and header");
     return false;
   }
 
   uint8_t rx_token = buf[0];
-
-  ESP_LOGD(TAG, "Header: 0x%04X", header);
   fifo_msg_.header = buf[2] << 8 | buf[1];
   fifo_msg_.n_objs = (fifo_msg_.header >> 12) & 0x07;
   fifo_msg_.msg_type = fifo_msg_.header & 0x1f;
@@ -389,7 +382,7 @@ bool FUSB302::handle_extended_msg() {
   const uint8_t *data = (const uint8_t *) fifo_msg_.objs + sizeof(ext_header);
   // Discount the header (2 bytes). The "padding" in the spec in this case is actually half of the PDO in the next
   // chunk.
-  const size_t actual_len = fifo_msg_.n_objs * 4 - 2;
+  const size_t actual_len = fifo_msg_.n_objs * 4 - sizeof(uint16_t);
 
   ESP_LOGD(TAG, "header.n_objs: %d, Received chunk %d chunked message. Data size: %d, received bytes: %d",
            fifo_msg_.n_objs, chunk_number, data_size, actual_len);
@@ -531,10 +524,10 @@ bool FUSB302::send_soft_reset() {
 
 bool FUSB302::send_epr_mode_enter() {
   uint32_t eprmdo = 0;
-  eprmdo |= (kEPRModeActionEnter << 24);
+  eprmdo |= (kEPRModeActionEnter << kEPRModeActionShift);
   // EPR sink operational PDP in 1W units.
   uint16_t power = ((power_requirement_.voltage_mv / 1000) * power_requirement_.current_ma) / 1000;
-  eprmdo |= (power << 16);
+  eprmdo |= (power << kEPRModePowerShift);
 
   if (!this->send_msg(kDataMsgTypeEPRMode, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
     ESP_LOGE(TAG, "Failed to send EPR_Mode enter message");
@@ -545,7 +538,7 @@ bool FUSB302::send_epr_mode_enter() {
 
 bool FUSB302::send_epr_mode_exit() {
   uint32_t eprmdo = 0;
-  eprmdo |= (kEPRModeActionExit << 24);
+  eprmdo |= (kEPRModeActionExit << kEPRModeActionShift);
   if (!this->send_msg(kDataMsgTypeEPRMode, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
     ESP_LOGE(TAG, "Failed to send EPR_Mode enter message");
     return false;
@@ -774,14 +767,12 @@ void FUSB302::Watchdog(FUSB302 *instance) {
   ESP_LOGE(TAG, "Watchdog expected READY state (and we're at %d) -- sending a soft reset.",
            static_cast<int>(instance->state_));
 
-  for (uint8_t i = 0; i < kI2CMaxTries; i++) {
-    if (instance->send_soft_reset()) {
-      ESP_LOGE(TAG, "Soft reset sent.");
-      return;
-    }
-    ESP_LOGE(TAG, "Error sending soft reset.");
-    delay(1);
+  if (instance->send_soft_reset()) {
+    ESP_LOGE(TAG, "Soft reset sent.");
+    return;
   }
+
+  ESP_LOGE(TAG, "Error sending soft reset.");
 }
 
 }  // namespace fusb302

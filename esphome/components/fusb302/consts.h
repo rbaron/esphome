@@ -53,6 +53,25 @@ constexpr uint8_t kEPRModeActionEnterAck = 0x02;
 constexpr uint8_t kEPRModeActionEnterSucceeded = 0x03;
 constexpr uint8_t kEPRModeActionEnterFailed = 0x04;
 constexpr uint8_t kEPRModeActionExit = 0x05;
+constexpr uint8_t kEPRModeActionShift = 24;
+constexpr uint8_t kEPRModePowerShift = 16;
+
+// Request Data Object (RDO) for Fixed PDOs.
+// In 10mA units.
+constexpr uint8_t kFixedRDOObjectPositionShift = 28;
+// In 10mA units.
+constexpr uint8_t kFixedRDOOperatingCurrentShift = 10;
+constexpr uint8_t kFixedRDOMaxCurrentShift = 0;
+constexpr uint32_t kFixedRDOUSBCap = (1 << 25);
+constexpr uint32_t kFixedRDONoUSBSuspend = (1 << 24);
+constexpr uint32_t kFixedRDOEPRCapable = (1 << 22);
+
+// Request Data Object (RDO) for PPS PDOs.
+constexpr uint8_t kPPSRDOObjectPositionShift = 28;
+// In 20mV units.
+constexpr uint8_t kPPSRDOOutputVoltageShift = 9;
+// In 50mA units.
+constexpr uint8_t kPPSRDOOutputCurrentShift = 0;
 
 // FUSB302 fifo tokens.
 constexpr uint8_t kTokSOP1 = 0x12;
