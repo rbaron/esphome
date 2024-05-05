@@ -37,6 +37,10 @@ StartPowerNegotiationAction = fusb302_ns.class_(
     "StartPowerNegotiationAction", automation.Action
 )
 
+SetVoltageRequirementAction = fusb302_ns.class_(
+    "SetVoltageRequirementAction", automation.Action
+)
+
 CONFIG_SCHEMA = (
     cv.Schema(
         {
@@ -79,11 +83,8 @@ async def to_code(config):
     await cg.register_component(var, config)
     await i2c.register_i2c_device(var, config)
 
-    cg.add(
-        var.set_power_requirement(
-            1000 * config[CONF_VOLTAGE], 1000 * config[CONF_CURRENT]
-        )
-    )
+    cg.add(var.set_voltage_requirement(1000 * config[CONF_VOLTAGE]))
+    cg.add(var.set_current_requirement(1000 * config[CONF_CURRENT]))
 
     if CONF_INTERRUPT_PIN in config:
         interrupt_pin = await cg.gpio_pin_expression(config[CONF_INTERRUPT_PIN])
@@ -120,3 +121,24 @@ async def fusb302_start_power_negotiation_to_code(
 ):
     paren = await cg.get_variable(config[CONF_ID])
     return cg.new_Pvariable(action_id, template_arg, paren)
+
+
+@automation.register_action(
+    "fusb302.set_voltage_requirement",
+    SetVoltageRequirementAction,
+    automation.maybe_simple_id(
+        {
+            cv.Required(CONF_ID): cv.use_id(FUSB302),
+            cv.Required(CONF_VOLTAGE): cv.templatable(cv.voltage),
+        }
+    ),
+)
+async def fusb302_set_voltage_requirement_to_code(
+    config, action_id, template_arg, args
+):
+    paren = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, paren)
+    template_ = await cg.templatable(config[CONF_VOLTAGE], args, cg.uint16)
+    cg.add(var.set_voltage(template_))
+    return var
+    # cg.add(var.set_voltage_requirement(1000 * config[CONF_VOLTAGE]))

@@ -44,7 +44,9 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   void set_start_power_negotiation_on_boot(bool start) { this->start_power_negotiation_on_boot_ = start; }
 
-  void set_power_requirement(uint16_t voltage_mv, uint16_t current_ma);
+  void set_voltage_requirement(uint16_t voltage_mv);
+
+  void set_current_requirement(uint16_t current_ma);
 
   void add_on_pd_negotiation_success_callback(std::function<void(bool)> &&callback) {
     this->on_pd_negotiation_success_callback_.add(std::move(callback));
@@ -62,7 +64,10 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   HighFrequencyLoopRequester high_freq_loop_req_;
 
   // From config.
-  PowerRequirement power_requirement_;
+  PowerRequirement power_requirement_{
+      .voltage_mv = 5000,
+      .current_ma = 1000,
+  };
 
   FIFOMsg fifo_msg_{};
 

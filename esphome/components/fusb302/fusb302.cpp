@@ -77,16 +77,19 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
   return true;
 }
 
-void FUSB302::set_power_requirement(uint16_t voltage_mv, uint16_t current_ma) {
-  // Sanity check against spec and FUSB302 max ratings.
+void FUSB302::set_voltage_requirement(uint16_t voltage_mv) {
   if (voltage_mv < 3300 || voltage_mv > 28000) {
     FUSB302_FAIL("Voltage must be between 3300 and 22000 mV. Got: %d mV", voltage_mv);
     return;
-  } else if (current_ma > 5000) {
+  }
+  this->power_requirement_.voltage_mv = voltage_mv;
+}
+
+void FUSB302::set_current_requirement(uint16_t current_ma) {
+  if (current_ma > 5000) {
     FUSB302_FAIL("Current must be between 0 and 5000 mA. Got: %d mA", current_ma);
     return;
   }
-  this->power_requirement_.voltage_mv = voltage_mv;
   this->power_requirement_.current_ma = current_ma;
 }
 

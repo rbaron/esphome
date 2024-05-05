@@ -30,5 +30,17 @@ template<typename... Ts> class StartPowerNegotiationAction : public Action<Ts...
   FUSB302 *fusb302_;
 };
 
+template<typename... Ts> class SetVoltageRequirementAction : public Action<Ts...> {
+ public:
+  explicit SetVoltageRequirementAction(FUSB302 *fusb302) : fusb302_(fusb302) {}
+
+  TEMPLATABLE_VALUE(uint16_t, voltage)
+
+  void play(Ts... x) override { this->fusb302_->set_voltage_requirement(this->voltage_.value(x...)); }
+
+ protected:
+  FUSB302 *fusb302_;
+};
+
 }  // namespace fusb302
 }  // namespace esphome
