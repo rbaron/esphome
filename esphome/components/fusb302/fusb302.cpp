@@ -100,7 +100,7 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 
 void FUSB302::set_power_requirement(uint16_t voltage_mv, uint16_t current_ma) {
   // Sanity check against spec and FUSB302 max ratings.
-  if (voltage_mv < 3300 || voltage_mv > 22000) {
+  if (voltage_mv < 3300 || voltage_mv > 28000) {
     FUSB302_FAIL("Voltage must be between 3300 and 22000 mV. Got: %d mV", voltage_mv);
     return;
   } else if (current_ma > 5000) {
@@ -492,7 +492,6 @@ bool FUSB302::evaluate_capabilities() {
     // If we don't find a compatible PDO, we'll just select the first one, which is guaranteed to be Safe5V as per spec.
     selected_pdo_idx_ = 0;
   }
-  // return this->request_pdo();
   if (!this->request_pdo()) {
     ESP_LOGE(TAG, "Failed to request PDO");
     return false;
@@ -502,7 +501,6 @@ bool FUSB302::evaluate_capabilities() {
 }
 
 bool FUSB302::request_pdo() {
-  // Fixed or PPS?
   const PDO &pdo = pdos_[*selected_pdo_idx_];
   uint32_t request;
   if (pdo.type == PDO::Type::FIXED) {
@@ -523,13 +521,11 @@ bool FUSB302::request_pdo() {
   }
 
   // In EPR mode, we have to send an EPR_Request, even when requesting a SPR PDO.
-  // TEST.
-  uint32_t *pdo0 = (uint32_t *) chunked_buffer_.data;
-  // uint32_t pdo0 = 0x0a81912c;
+  // uint32_t *pdo0 = ((uint32_t *) chunked_buffer_.data)[selected_pdo_idx_.value_or(0)];
+  uint32_t *pdo0 = ((uint32_t *) chunked_buffer_.data) + selected_pdo_idx_.value_or(0);
   uint8_t buf[sizeof(request) + sizeof(pdo0)];
   memcpy(buf, &request, sizeof(request));
   memcpy(buf + sizeof(request), pdo0, sizeof(*pdo0));
-
   return this->send_msg(0b1001, sizeof(buf), buf);
 }
 
