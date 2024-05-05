@@ -37,14 +37,14 @@ constexpr uint8_t kExtMsgTypeEPRKeepAlive = 0x3;
 constexpr uint8_t kExtMsgTypeEPRKeepAliveAck = 0x4;
 
 // Message header.
-constexpr uint8_t kMsgHeaderExtended = (1 << 15);
+constexpr uint16_t kMsgHeaderExtended = (1 << 15);
 constexpr uint8_t kMsgHeaderNumberOfObjsShift = 12;
 constexpr uint8_t kMsgHeaderMsgIdShift = 9;
 constexpr uint8_t kMsgHeaderPDSpecShift = 6;
 
 // Extended message header.
-constexpr uint8_t kExtHeaderChunked = (1 << 15);
-constexpr uint8_t kExtHeaderRequestChunk = (1 << 10);
+constexpr uint16_t kExtHeaderChunked = (1 << 15);
+constexpr uint16_t kExtHeaderRequestChunk = (1 << 10);
 constexpr uint8_t kExtHeaderChunkNumberShift = 11;
 
 // EPR Mode actions.

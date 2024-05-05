@@ -589,7 +589,7 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extend
   header |= (pd_spec_ << kMsgHeaderPDSpecShift);
   header |= msg_type;
   header |= ((msg_id++) << kMsgHeaderMsgIdShift);
-  header |= kMsgHeaderExtended;
+  header |= (extended ? kMsgHeaderExtended : 0);
 
   uint8_t buff[sizeof(sop) + sizeof(header) + kMaxPDOS * sizeof(uint32_t) + sizeof(uint32_t) + sizeof(eop)];
   uint8_t pos = 0;
@@ -643,7 +643,7 @@ void FUSB302::maybe_send_epr_keepalive() {
 
   uint16_t ecdb = kExtMsgTypeEPRKeepAlive;
   uint16_t ext_header = sizeof(ecdb) | kExtHeaderChunked;
-  uint32_t keepalive = (ecdb << sizeof(ext_header)) | ext_header;
+  uint32_t keepalive = (ecdb << 16) | ext_header;
 
   if (!this->send_msg(kExtMsgTypeExtendedControl, sizeof(keepalive), (uint8_t *) &keepalive, /*extended=*/true)) {
     ESP_LOGE(TAG, "Failed to send EPR keepalive");
@@ -672,7 +672,7 @@ void FUSB302::enter_state(State state) {
       break;
     }
     case State::EVALUATE_CAPABILITY: {
-      // We received capabities. We can cancel the SinkWaitCapTimer timer.
+      // We received capabilities. We can cancel the SinkWaitCapTimer timer.
       cancel_timeout(kWaitForCapsTimerName);
       // Start our own watchdog. We should we in the READY state in tSoftResetWatchdogIntervalMs.
       this->set_timeout(kSoftResetWatchdogTimerName, tSoftResetWatchdogIntervalMs,
