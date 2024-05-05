@@ -60,7 +60,7 @@ void FUSB302::dump_config() {
 bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
   // Enable CCx measuring circuit.
   if (!this->write_byte(REG_SWITCHES0, REG_SWITCHES0_PULLDOWN_CC1 | REG_SWITCHES0_PULLDOWN_CC2 | (cc_pin << 2))) {
-    FUSB302_FAIL("Failed to write to SWITCHES0");
+    FUSB302_FAIL("Failed to write to SWITCHES0.");
     return false;
   }
 
@@ -69,7 +69,7 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 
   // Read the voltage.
   if (!this->read_byte(REG_STATUS0, voltage_out)) {
-    FUSB302_FAIL("Failed to read voltage");
+    FUSB302_FAIL("Failed to read voltage.");
     return false;
   }
   // We only care for the lower 2 bits.
@@ -79,10 +79,10 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 
 void FUSB302::set_voltage_requirement(uint16_t voltage_mv) {
   if (voltage_mv < 3300 || voltage_mv > 28000) {
-    FUSB302_FAIL("Voltage must be between 3300 and 28000 mV. Got: %d mV", voltage_mv);
+    FUSB302_FAIL("Voltage must be between 3300 and 28000 mV. Got: %d mV.", voltage_mv);
     return;
   } else if (this->power_requirement_.voltage_mv == voltage_mv) {
-    ESP_LOGI(TAG, "Voltage requirement already set to %d mV", voltage_mv);
+    ESP_LOGI(TAG, "Voltage requirement already set to %d mV.", voltage_mv);
     return;
   }
 
@@ -100,7 +100,7 @@ void FUSB302::set_voltage_requirement(uint16_t voltage_mv) {
   this->cancel_timeout(kSoftResetWatchdogTimerName);
   this->power_requirement_.voltage_mv = voltage_mv;
 
-  ESP_LOGW(TAG, "Setting voltage requirement to %d mV", voltage_mv);
+  ESP_LOGD(TAG, "Set voltage requirement to %d mV", this->power_requirement_.voltage_mv);
   send_soft_reset();
 }
 
@@ -115,7 +115,6 @@ void FUSB302::set_current_requirement(uint16_t current_ma) {
 void FUSB302::setup() {
   // Set up the interrupt pin if it's set.
   if (int_pin_ != nullptr) {
-    ESP_LOGD(TAG, "Setting up interrupt pin");
     int_pin_->setup();
     int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
   }
@@ -145,9 +144,8 @@ void FUSB302::start_power_negotiation() {
   if (this->read_register(REG_DEVICE_ID, (uint8_t *) &device_id, 1, false)) {
     FUSB302_FAIL("Failed to read device id");
     return;
-  } else {
-    ESP_LOGV(TAG, "Device id: 0x%04X", device_id);
   }
+  ESP_LOGI(TAG, "Device id: 0x%04X", device_id);
 
   if (!this->write_byte(REG_MASK1, REG_MASK1_MASK_ALL)) {
     FUSB302_FAIL("Failed to write to MASK1");
@@ -231,7 +229,6 @@ void FUSB302::loop() {
   if ((this->int_pin_ == nullptr || this->interrupt_pending_) && power_negotiation_started_) {
     this->interrupt_pending_ = false;
     this->process_interrupt();
-    ESP_LOGD(TAG, "Processed interrupt");
   }
 }
 
@@ -335,10 +332,10 @@ bool FUSB302::handle_msg() {
     if (fifo_msg_.msg_type == kCtrlMsgTypeGoodCRC) {
       return true;
     } else if (fifo_msg_.msg_type == kCtrlMsgTypeAccept) {
-      ESP_LOGW(TAG, "Accept message received");
+      ESP_LOGD(TAG, "Accept message received");
       enter_state(State::TRANSITION_SINK);
     } else if (fifo_msg_.msg_type == kCtrlMsgTypePSReady) {
-      ESP_LOGW(TAG, "PS_RDY message received");
+      ESP_LOGD(TAG, "PS_RDY message received");
       enter_state(State::READY);
     } else if (fifo_msg_.msg_type == kCtrlMsgTypeSoftReset) {
       // Send an Accept message right away. If things go well, the source will send a Source_Capabilities message
@@ -362,10 +359,10 @@ bool FUSB302::handle_msg() {
     } else if (fifo_msg_.msg_type == kDataMsgTypeEPRMode) {
       uint8_t action = (fifo_msg_.objs[0] >> 24) & 0xff;
       if (action == 0x2) {  // Enter Acknowledged.
-        ESP_LOGW(TAG, "Received EPR_Mode: Enter Acknowledged.");
+        ESP_LOGD(TAG, "Received EPR_Mode: Enter Acknowledged.");
       } else if (action == 0x3) {  // Enter Succeeded.
         epr_mode_ = true;
-        ESP_LOGW(TAG, "Received EPR_Mode: Enter Succeeded.");
+        ESP_LOGD(TAG, "Received EPR_Mode: Enter Succeeded.");
       } else if (action == 0x4) {  // Enter Failed.
         uint8_t cause = (fifo_msg_.objs[0] >> 16) & 0xff;
         ESP_LOGW(TAG, "Received EPR_Mode: Enter Failed. Cause: %d", cause);
@@ -408,7 +405,6 @@ bool FUSB302::handle_extended_msg() {
   // Are we done?
   ESP_LOGD(TAG, "Chunked buffer: %d/%d", chunked_buffer_.current_len, chunked_buffer_.total_len);
   if (chunked_buffer_.current_len != chunked_buffer_.total_len) {
-    // Request next chunk.
     return this->send_chunk_request(chunk_number);
   }
 
@@ -610,15 +606,15 @@ void FUSB302::maybe_rerequest_pps_pdo() {
   // Schedule a new soft reset watchdog timer.
   this->set_timeout(kSoftResetWatchdogTimerName, tSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
 
-  ESP_LOGW(TAG, "Maybe rerequesting PPS PDO. State is: %d", static_cast<int>(state_));
+  ESP_LOGD(TAG, "Maybe rerequesting PPS PDO. State is: %d.", static_cast<int>(state_));
   if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
       pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
-    ESP_LOGW(TAG, "Ok! Re-requesting PPS PDO.");
+    ESP_LOGD(TAG, "Ok! Re-requesting PPS PDO.");
     this->request_pdo();
 
     enter_state(State::SELECT_CAPABILITY);
 
-    ESP_LOGW(TAG, "Done re-requesting PDO. Re-scheduling PPS timer");
+    ESP_LOGD(TAG, "Done re-requesting PDO. Rescheduling PPS timer.");
     // Schedule a new PPS timer.
     this->set_timeout(kPPSTimerName, tPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
   } else {
@@ -627,19 +623,19 @@ void FUSB302::maybe_rerequest_pps_pdo() {
 }
 
 void FUSB302::maybe_send_epr_keepalive() {
-  ESP_LOGI(TAG, "Maybe sending EPR keepalive. State is: %d", static_cast<int>(state_));
+  ESP_LOGD(TAG, "Maybe sending EPR keepalive. State is: %d.", static_cast<int>(state_));
   if (!epr_mode_) {
     ESP_LOGE(TAG, "Not in EPR mode!");
     return;
   }
-  ESP_LOGI(TAG, "Sending EPR keepalive.");
+  ESP_LOGI(TAG, "Sending EPR keepalive");
 
   uint16_t ecdb = kExtMsgTypeEPRKeepAlive;
   uint16_t ext_header = sizeof(ecdb) | kExtHeaderChunked;
   uint32_t keepalive = (ecdb << 16) | ext_header;
 
   if (!this->send_msg(kExtMsgTypeExtendedControl, sizeof(keepalive), (uint8_t *) &keepalive, /*extended=*/true)) {
-    ESP_LOGE(TAG, "Failed to send EPR keepalive");
+    ESP_LOGE(TAG, "Failed to send EPR keepalive.");
     return;
   }
 
@@ -705,10 +701,10 @@ void FUSB302::enter_state(State state) {
         // We selected the Safe5V, but we can try to go into EPR mode if the source supports it.
         if (selected_pdo_idx_.value_or(-1) == 0 && pdos_[0].type == PDO::Type::FIXED &&
             pdos_[0].fixed.epr_mode_capable && !epr_mode_) {
-          ESP_LOGW(TAG, "Selected Safe5V, but EPR mode capable. Trying to go into EPR mode.");
+          ESP_LOGI(TAG, "Selected Safe5V, but EPR mode capable. Trying to go into EPR mode.");
           FUSB302_LOG_PDO(ESP_LOGW, pdos_[0]);
           if (!this->send_epr_mode_enter()) {
-            ESP_LOGE(TAG, "Failed to send EPR mode enter message");
+            ESP_LOGE(TAG, "Failed to send EPR mode enter message.");
           }
           return;
 
@@ -758,7 +754,7 @@ void FUSB302::Watchdog(FUSB302 *instance) {
 
   // We're good if we're in READY state.
   if (instance->state_ == State::READY) {
-    ESP_LOGI(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
+    ESP_LOGD(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
     instance->cancel_timeout(kSoftResetWatchdogTimerName);
     return;
   }
@@ -767,12 +763,12 @@ void FUSB302::Watchdog(FUSB302 *instance) {
   ESP_LOGE(TAG, "Watchdog expected READY state (and we're at %d) -- sending a soft reset.",
            static_cast<int>(instance->state_));
 
-  if (instance->send_soft_reset()) {
-    ESP_LOGE(TAG, "Soft reset sent.");
+  if (!instance->send_soft_reset()) {
+    ESP_LOGE(TAG, "Error sending soft reset.");
     return;
   }
 
-  ESP_LOGE(TAG, "Error sending soft reset.");
+  ESP_LOGE(TAG, "Soft reset sent.");
 }
 
 }  // namespace fusb302
