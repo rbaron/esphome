@@ -79,10 +79,29 @@ bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
 
 void FUSB302::set_voltage_requirement(uint16_t voltage_mv) {
   if (voltage_mv < 3300 || voltage_mv > 28000) {
-    FUSB302_FAIL("Voltage must be between 3300 and 22000 mV. Got: %d mV", voltage_mv);
+    FUSB302_FAIL("Voltage must be between 3300 and 28000 mV. Got: %d mV", voltage_mv);
+    return;
+  } else if (this->power_requirement_.voltage_mv == voltage_mv) {
+    ESP_LOGI(TAG, "Voltage requirement already set to %d mV", voltage_mv);
     return;
   }
+
+  if (!power_negotiation_started_) {
+    this->power_requirement_.voltage_mv = voltage_mv;
+    return;
+  } else if (state_ != State::READY) {
+    return;
+  }
+
+  // Cancel timers.
+  this->cancel_timeout(kWaitForCapsTimerName);
+  this->cancel_timeout(kPPSTimerName);
+  this->cancel_timeout(kEPRKeepaliveTimerName);
+  this->cancel_timeout(kSoftResetWatchdogTimerName);
   this->power_requirement_.voltage_mv = voltage_mv;
+
+  ESP_LOGW(TAG, "Setting voltage requirement to %d mV", voltage_mv);
+  send_soft_reset();
 }
 
 void FUSB302::set_current_requirement(uint16_t current_ma) {
@@ -101,12 +120,17 @@ void FUSB302::setup() {
     int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
   }
 
+  // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We may disable
+  // it once the negotiation is complete.
+  high_freq_loop_req_.start();
+
   if (this->start_power_negotiation_on_boot_) {
     this->start_power_negotiation();
   }
 }
 
 void FUSB302::start_power_negotiation() {
+  // If calling for the first time, we will run some initialization.
   if (!this->write_byte(REG_RESET, REG_RESET_SW_RESET | REG_RESET_PD_RESET)) {
     FUSB302_FAIL("Failed to write to RESET");
     return;
@@ -138,31 +162,7 @@ void FUSB302::start_power_negotiation() {
     FUSB302_FAIL("Failed to write to MASKB");
     return;
   }
-
-  // if (!this->write_byte(REG_CONTROL0, REG_CONTROL0_HOST_CUR_HIGH)) {
-  //   ESP_LOGE(TAG, "Failed to write to CONTROL0");
-  //   FUSB302_FAIL("Failed to write to CONTROL0");
-  //   return;
-  // }
-
-  // Enable packet retry.
-  if (!this->write_byte(REG_CONTROL3, REG_CONTROL3_AUTO_RETRY | REG_CONTROL3_N_RETRIES_3)) {
-    FUSB302_FAIL("Failed to write to CONTROL3");
-    return;
-  }
-
-  if (!this->write_byte(REG_CONTROL2, REG_CONTROL2_DO_NOT_USE)) {
-    FUSB302_FAIL("Failed to write to CONTROL2");
-    return;
-  }
-
-  // // Clear RX fifo.
-  // if (!this->write_byte(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
-  //   FUSB302_FAIL("Failed to write to CONTROL1");
-  //   return;
-  // }
-
-  // Ready CC1 and CC2 voltages to figure out which one we're connected to.
+  // Read CC1 and CC2 voltages to figure out which one we're connected to.
   uint8_t cc1_voltage, cc2_voltage;
   if (!this->measure_cc_pin(/*cc_pin=*/1, &cc1_voltage)) {
     FUSB302_FAIL("Failed to read CC1 voltage");
@@ -187,6 +187,16 @@ void FUSB302::start_power_negotiation() {
     FUSB302_FAIL("Failed to write to SWITCHES1");
     return;
   }
+  // Enable packet retry.
+  if (!this->write_byte(REG_CONTROL3, REG_CONTROL3_AUTO_RETRY | REG_CONTROL3_N_RETRIES_3)) {
+    FUSB302_FAIL("Failed to write to CONTROL3");
+    return;
+  }
+
+  if (!this->write_byte(REG_CONTROL2, REG_CONTROL2_DO_NOT_USE)) {
+    FUSB302_FAIL("Failed to write to CONTROL2");
+    return;
+  }
 
   // Flush the TX FIFO.
   if (!this->write_byte(REG_CONTROL0, REG_CONTROL0_HOST_CUR_HIGH | REG_CONTROL0_TX_FLUSH)) {
@@ -204,10 +214,6 @@ void FUSB302::start_power_negotiation() {
     FUSB302_FAIL("Failed to write to RESET");
     return;
   }
-
-  // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We may disable
-  // it once the negotiation is complete.
-  high_freq_loop_req_.start();
 
   enter_state(State::WAIT_FOR_CAPABILITIES);
 
@@ -235,16 +241,6 @@ void FUSB302::update() {}
 void FUSB302::ISR(FUSB302 *instance) { instance->interrupt_pending_ = true; }
 
 bool FUSB302::process_interrupt() {
-  ESP_LOGD(TAG, "Processing interrupt");
-
-  // Read all interrupt registers in one go.
-  volatile uint8_t buf[7];
-  i2c::ErrorCode err;
-  if ((err = this->read_register(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
-    ESP_LOGE(TAG, "Failed to read reg. Error: %d", err);
-    return false;
-  }
-
   while (this->has_fifo_msg()) {
     // Read FIFO data into fifo_msg_.
     if (!this->read_fifo()) {
@@ -264,11 +260,19 @@ bool FUSB302::process_interrupt() {
 }
 
 bool FUSB302::has_fifo_msg() {
-  uint8_t status1;
-  if (!this->read_byte(REG_STATUS1, &status1)) {
-    ESP_LOGE(TAG, "Failed to read status1");
+  // Read all interrupt registers in one go. This will also clear the interrupt.
+  uint8_t buf[7];
+  i2c::ErrorCode err;
+  if ((err = this->read_register(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
+    ESP_LOGE(TAG, "Failed to read reg. Error: %d", err);
     return false;
   }
+
+  const uint8_t status1 = buf[5];
+  // if (!this->read_byte(REG_STATUS1, &status1)) {
+  //   ESP_LOGE(TAG, "Failed to read status1");
+  //   return false;
+  // }
   return (status1 & (1 << 5)) == 0;
 }
 
@@ -509,15 +513,6 @@ bool FUSB302::request_pdo() {
 }
 
 bool FUSB302::send_soft_reset() {
-  // Try our best to flush the contents for RX and TX fifo.
-  if (!this->write_byte(REG_CONTROL0, REG_CONTROL0_TX_FLUSH)) {
-    ESP_LOGE(TAG, "Failed to flush TX FIFO");
-    return false;
-  }
-  if (!this->write_byte(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
-    ESP_LOGE(TAG, "Failed to flush TX FIFO");
-    return false;
-  }
   if (!this->send_msg(kCtrlMsgTypeSoftReset, 0, nullptr)) {
     ESP_LOGE(TAG, "Failed to send soft reset");
     return false;
@@ -753,7 +748,7 @@ void FUSB302::Watchdog(FUSB302 *instance) {
 
   // If interrupt is asserted, something is wrong. Could be caused by an error in clearing the interrupt.
   if (instance->int_pin_ != nullptr && instance->int_pin_->digital_read() == 0) {
-    ESP_LOGE(TAG, "Interrupt is asserted. Something is wrong.");
+    ESP_LOGW(TAG, "Interrupt is asserted. Something is wrong.");
     // This will re-clear the interrupt.
     instance->process_interrupt();
     return;
@@ -761,7 +756,7 @@ void FUSB302::Watchdog(FUSB302 *instance) {
 
   // We're good if we're in READY state.
   if (instance->state_ == State::READY) {
-    ESP_LOGW(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
+    ESP_LOGI(TAG, "Watchdog expired, but we're in READY state. Not doing anything.");
     instance->cancel_timeout(kSoftResetWatchdogTimerName);
     return;
   }

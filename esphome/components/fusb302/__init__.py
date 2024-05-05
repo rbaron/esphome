@@ -108,10 +108,6 @@ async def to_code(config):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(bool, "success")], conf)
 
-    # @automation.register_action(
-    #     "fusb302.start_power_negotiation", StartPowerNegotiationAction, ACTION_SCHEMA
-    # )
-
 
 @automation.register_action(
     "fusb302.start_power_negotiation", StartPowerNegotiationAction, ACTION_SCHEMA
@@ -138,7 +134,6 @@ async def fusb302_set_voltage_requirement_to_code(
 ):
     paren = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, paren)
-    template_ = await cg.templatable(config[CONF_VOLTAGE], args, cg.uint16)
+    template_ = await cg.templatable(config[CONF_VOLTAGE], args, cg.float_)
     cg.add(var.set_voltage(template_))
     return var
-    # cg.add(var.set_voltage_requirement(1000 * config[CONF_VOLTAGE]))

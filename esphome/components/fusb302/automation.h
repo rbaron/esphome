@@ -34,9 +34,12 @@ template<typename... Ts> class SetVoltageRequirementAction : public Action<Ts...
  public:
   explicit SetVoltageRequirementAction(FUSB302 *fusb302) : fusb302_(fusb302) {}
 
-  TEMPLATABLE_VALUE(uint16_t, voltage)
+  TEMPLATABLE_VALUE(float, voltage)
 
-  void play(Ts... x) override { this->fusb302_->set_voltage_requirement(this->voltage_.value(x...)); }
+  void play(Ts... x) override {
+    // Set voltage in millivolts.
+    this->fusb302_->set_voltage_requirement(1000 * this->voltage_.value(x...));
+  }
 
  protected:
   FUSB302 *fusb302_;
