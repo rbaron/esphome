@@ -14,6 +14,8 @@ PDO parse_pdo(uint32_t data) {
   if (pdo.type == PDO::Type::FIXED) {
     pdo.fixed.voltage_mv = ((data >> 10) & 0x3FF) * 50;
     pdo.fixed.max_current_ma = (data & 0x3FF) * 10;
+    pdo.fixed.epr_mode_capable = (data >> 23) & 0x1;
+    pdo.fixed.unchunked_ext_msg_supported = (data >> 24) & 0x1;
     pdo.parsed = true;
     return pdo;
   } else if (pdo.type == PDO::Type::VARIABLE) {
@@ -52,24 +54,6 @@ bool is_pdo_compatible(const PDO &pdo, const PowerRequirement &power_requirement
   }
   ESP_LOGW(TAG, "Unsupported PDO type: %d, assuming not compatible", static_cast<int>(pdo.type));
   return false;
-}
-
-void log_pdo(const PDO &pdo) {
-  if (pdo.type == PDO::Type::FIXED) {
-    ESP_LOGI(TAG, "Fixed PDO: %d mV, %d mA", pdo.fixed.voltage_mv, pdo.fixed.max_current_ma);
-  } else if (pdo.type == PDO::Type::VARIABLE) {
-    ESP_LOGI(TAG, "Variable PDO: %d-%d mV, %d mW", pdo.variable.min_voltage_mv, pdo.variable.max_voltage_mv,
-             pdo.variable.max_power_mw);
-  } else if (pdo.type == PDO::Type::AUGMENTED) {
-    if (pdo.augmented.type == PDO::Augmented::Type::SPR_PPS) {
-      ESP_LOGI(TAG, "Augmented SPR_PPS PDO: %d - %d mV, %d mA", pdo.augmented.spr_pps.min_voltage_mv,
-               pdo.augmented.spr_pps.max_voltage_mv, pdo.augmented.spr_pps.max_current_ma);
-    } else {
-      ESP_LOGW(TAG, "Unsupported augmented PDO type: %d", static_cast<int>(pdo.augmented.type));
-    }
-  } else {
-    ESP_LOGW(TAG, "Unsupported PDO type");
-  }
 }
 
 }  // namespace fusb302

@@ -8,6 +8,7 @@
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/fusb302/pdo.h"
+#include "esphome/components/fusb302/timers.h"
 
 namespace esphome {
 namespace fusb302 {
@@ -33,6 +34,14 @@ struct FIFOMsg {
   uint16_t header;
   uint8_t msg_type;
   uint8_t n_objs;
+  bool extended;
+
+  // struct {
+  //   uint16_t data;
+  //   bool chunked;
+  //   size_t data_size;
+  // } extended_header;
+
   uint32_t objs[FUSB302_MAX_PDOS];
 };
 
@@ -47,10 +56,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   void set_start_power_negotiation_on_boot(bool start) { this->start_power_negotiation_on_boot_ = start; }
 
-  void set_power_requirement(uint16_t voltage_mv, uint16_t current_ma) {
-    this->power_requirement_.voltage_mv = voltage_mv;
-    this->power_requirement_.current_ma = current_ma;
-  }
+  void set_power_requirement(uint16_t voltage_mv, uint16_t current_ma);
 
   void add_on_pd_negotiation_success_callback(std::function<void(bool)> &&callback) {
     this->on_pd_negotiation_success_callback_.add(std::move(callback));
@@ -84,17 +90,34 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   InternalGPIOPin *int_pin_{nullptr};
   volatile bool interrupt_pending_{true};
 
+  // Chunked message handling.
+  struct {
+    uint8_t data[kMaxExtendedMsgLen];
+    size_t total_len;
+    size_t current_len;
+  } chunked_buffer_;
+  bool send_chunk_request(uint8_t chunk_number);
+
   // Private member functions.
   bool process_interrupt();
   bool has_fifo_msg();
   bool read_fifo();
   bool handle_msg();
-  bool send_msg(uint8_t msg_type, uint8_t len, uint8_t *data);
+  bool handle_extended_msg();
+  bool send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extended = false);
   bool parse_pdos(uint8_t n_pdos, uint32_t *pdos);
   bool request_pdo();
   bool send_soft_reset();
   bool measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out);
+
+  // Timer callbacks.
   void maybe_rerequest_pps_pdo();
+  void maybe_send_epr_keepalive();
+
+  // EPR mode.
+  bool send_epr_mode_enter();
+  bool send_epr_mode_exit();
+  bool epr_mode_{false};
 
   // Reliability hacks.
   i2c::ErrorCode read_register_retry(uint8_t a_register, uint8_t *data, size_t len, bool stop = true);
@@ -115,6 +138,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
 
   bool start_power_negotiation_on_boot_ = true;
   bool power_negotiation_started_ = false;
+  bool first_ready_state_ = true;
 
   CallbackManager<void(bool)> on_pd_negotiation_success_callback_{};
   CallbackManager<void(bool)> on_pd_negotiation_failure_callback_{};
