@@ -106,6 +106,7 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   bool handle_extended_msg();
   bool send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extended = false);
   bool parse_pdos(uint8_t n_pdos, uint32_t *pdos);
+  bool evaluate_capabilities();
   bool request_pdo();
   bool send_soft_reset();
   bool measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out);
