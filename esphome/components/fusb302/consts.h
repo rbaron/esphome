@@ -36,6 +36,24 @@ constexpr uint8_t kExtMsgTypeEPRSourceCapabilities = 0b10001;
 constexpr uint8_t kExtMsgTypeEPRKeepAlive = 0x3;
 constexpr uint8_t kExtMsgTypeEPRKeepAliveAck = 0x4;
 
+// Message header.
+constexpr uint8_t kMsgHeaderExtended = (1 << 15);
+constexpr uint8_t kMsgHeaderNumberOfObjsShift = 12;
+constexpr uint8_t kMsgHeaderMsgIdShift = 9;
+constexpr uint8_t kMsgHeaderPDSpecShift = 6;
+
+// Extended message header.
+constexpr uint8_t kExtHeaderChunked = (1 << 15);
+constexpr uint8_t kExtHeaderRequestChunk = (1 << 10);
+constexpr uint8_t kExtHeaderChunkNumberShift = 11;
+
+// EPR Mode actions.
+constexpr uint8_t kEPRModeActionEnter = 0x01;
+constexpr uint8_t kEPRModeActionEnterAck = 0x02;
+constexpr uint8_t kEPRModeActionEnterSucceeded = 0x03;
+constexpr uint8_t kEPRModeActionEnterFailed = 0x04;
+constexpr uint8_t kEPRModeActionExit = 0x05;
+
 // FUSB302 fifo tokens.
 constexpr uint8_t kTokSOP1 = 0x12;
 constexpr uint8_t kTokSOP2 = 0x13;

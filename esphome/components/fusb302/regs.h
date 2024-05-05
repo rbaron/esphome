@@ -24,7 +24,7 @@ constexpr uint8_t REG_SLICE = 0x05;
 
 constexpr uint8_t REG_CONTROL0 = 0x06;
 constexpr uint8_t REG_CONTROL0_HOST_CUR_HIGH = (0b11 << 2);
-constexpr uint8_t REG_CONTROL0_TX_FLUSH = (0b11 << 6);
+constexpr uint8_t REG_CONTROL0_TX_FLUSH = (0b1 << 6);
 
 constexpr uint8_t REG_CONTROL1 = 0x07;
 constexpr uint8_t REG_CONTROL1_RX_FLUSH = (1 << 2);

@@ -514,11 +514,11 @@ bool FUSB302::request_pdo() {
 
 bool FUSB302::send_soft_reset() {
   // Try our best to flush the contents for RX and TX fifo.
-  if (!this->write_byte_retry(REG_CONTROL0, 0x1 << 6)) {
+  if (!this->write_byte_retry(REG_CONTROL0, REG_CONTROL0_TX_FLUSH)) {
     ESP_LOGE(TAG, "Failed to flush TX FIFO");
     return false;
   }
-  if (!this->write_byte_retry(REG_CONTROL1, 0x1 << 2)) {
+  if (!this->write_byte_retry(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
     ESP_LOGE(TAG, "Failed to flush TX FIFO");
     return false;
   }
@@ -531,11 +531,10 @@ bool FUSB302::send_soft_reset() {
 
 bool FUSB302::send_epr_mode_enter() {
   uint32_t eprmdo = 0;
-  // Action: enter.
-  eprmdo |= (0x01 << 24);
+  eprmdo |= (kEPRModeActionEnter << 24);
   // EPR sink operational PDP in 1W units.
-  // TODO: actually compute this. Safe 30W for now.
-  eprmdo |= ((30) << 16);
+  uint16_t power = ((power_requirement_.voltage_mv / 1000) * power_requirement_.current_ma) / 1000;
+  eprmdo |= (power << 16);
 
   if (!this->send_msg(kDataMsgTypeEPRMode, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
     ESP_LOGE(TAG, "Failed to send EPR_Mode enter message");
@@ -546,9 +545,7 @@ bool FUSB302::send_epr_mode_enter() {
 
 bool FUSB302::send_epr_mode_exit() {
   uint32_t eprmdo = 0;
-  // Action: exit.
-  eprmdo |= (0x05 << 24);
-
+  eprmdo |= (kEPRModeActionExit << 24);
   if (!this->send_msg(kDataMsgTypeEPRMode, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
     ESP_LOGE(TAG, "Failed to send EPR_Mode enter message");
     return false;
@@ -558,9 +555,9 @@ bool FUSB302::send_epr_mode_exit() {
 
 bool FUSB302::send_chunk_request(uint8_t chunk_number) {
   uint16_t ext_header = 0;
-  ext_header |= (1 << 15);                   // Chunked.
-  ext_header |= ((chunk_number + 1) << 11);  // Chunk number.
-  ext_header |= (1 << 10);                   // Request Chunk.
+  ext_header |= kExtHeaderChunked;
+  ext_header |= ((chunk_number + 1) << kExtHeaderChunkNumberShift);
+  ext_header |= kExtHeaderRequestChunk;
 
   // Padding.
   uint32_t padded_data = 0;
@@ -582,17 +579,17 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extend
   msg_id &= 0x7;
 
   // header (2 bytes) + data (len bytes) + crc (4 bytes).
-  uint8_t last = kTokPACKSYM | (sizeof(uint16_t) + len + sizeof(uint32_t));
+  const uint8_t last = kTokPACKSYM | (sizeof(uint16_t) + len + sizeof(uint32_t));
   const uint8_t sop[] = {kTokSOP1, kTokSOP1, kTokSOP1, kTokSOP2, last};
   const uint8_t eop[] = {kTokEOP, kTokTXOFF, kTokTXON};
 
   uint16_t header = 0;
-  // Number of objects. Each object is 4 bytes.
-  header |= ((len / sizeof(uint32_t)) << 12);
-  header |= (pd_spec_ << 6);
+  // Each object is 4 bytes.
+  header |= ((len / sizeof(uint32_t)) << kMsgHeaderNumberOfObjsShift);
+  header |= (pd_spec_ << kMsgHeaderPDSpecShift);
   header |= msg_type;
-  header |= ((msg_id++) << 9);
-  header |= (extended << 15);
+  header |= ((msg_id++) << kMsgHeaderMsgIdShift);
+  header |= kMsgHeaderExtended;
 
   uint8_t buff[sizeof(sop) + sizeof(header) + kMaxPDOS * sizeof(uint32_t) + sizeof(uint32_t) + sizeof(eop)];
   uint8_t pos = 0;
@@ -642,15 +639,11 @@ void FUSB302::maybe_send_epr_keepalive() {
     ESP_LOGE(TAG, "Not in EPR mode!");
     return;
   }
-  ESP_LOGI(TAG, "Ok! Sending EPR keepalive.");
+  ESP_LOGI(TAG, "Sending EPR keepalive.");
 
   uint16_t ecdb = kExtMsgTypeEPRKeepAlive;
-
-  // Data size is 2 bytes & chunked.
-  uint16_t ext_header = sizeof(ecdb) | (1 << 15);
-  // uint16_t ext_header = 0x02;
-
-  uint32_t keepalive = ecdb << 16 | ext_header;
+  uint16_t ext_header = sizeof(ecdb) | kExtHeaderChunked;
+  uint32_t keepalive = (ecdb << sizeof(ext_header)) | ext_header;
 
   if (!this->send_msg(kExtMsgTypeExtendedControl, sizeof(keepalive), (uint8_t *) &keepalive, /*extended=*/true)) {
     ESP_LOGE(TAG, "Failed to send EPR keepalive");
