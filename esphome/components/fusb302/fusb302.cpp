@@ -372,6 +372,8 @@ bool FUSB302::handle_msg() {
       } else {
         ESP_LOGE(TAG, "Received unexpected EPR_Mode message. Action: %d. Header: 0x%04X", action, fifo_msg_.header);
       }
+    } else if (fifo_msg_.msg_type == kDataMsgTypeVendorDefined) {
+      ESP_LOGD(TAG, "Vendor defined message received");
     } else {
       ESP_LOGW(TAG, "Unhandled data message type: 0x%02X", fifo_msg_.msg_type);
     }

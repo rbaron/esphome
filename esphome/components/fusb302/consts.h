@@ -27,6 +27,7 @@ constexpr uint8_t kDataMsgTypeSourceCapabilities = 0b0001;
 constexpr uint8_t kDataMsgTypeRequest = 0b0010;
 constexpr uint8_t kDataMsgTypeEPRRequest = 0b1001;
 constexpr uint8_t kDataMsgTypeEPRMode = 0b1010;
+constexpr uint8_t kDataMsgTypeVendorDefined = 0b1111;
 
 // Extended message types.
 constexpr uint8_t kExtMsgTypeExtendedControl = 0b10000;
