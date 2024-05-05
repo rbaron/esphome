@@ -3,16 +3,12 @@
 #include "esphome/core/log.h"
 #include "esphome/components/fusb302/pdo.h"
 #include "esphome/components/fusb302/regs.h"
-#include "esphome/components/fusb302/timers.h"
+#include "esphome/components/fusb302/consts.h"
 #include "esphome/components/fusb302/crc32.h"
 #include "esphome/core/hal.h"
-// #include "Wire.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-
-// #define HAS_BITS(v, b, n) (((v) >> (b)) & ((1 << (n)) - 1))
-// #define HAS_BIT(v, b) (HAS_BITS(v, b, 1))
 
 #define FUSB302_FAIL(str, ...) \
   do { \
@@ -30,14 +26,11 @@ constexpr uint8_t kI2CSLeepBetweenAttemptsMS = 1;
 
 namespace {
 
+// Timer names.
 constexpr char kWaitForCapsTimerName[] = "wait_for_caps";
 constexpr char kPPSTimerName[] = "pps_timer";
 constexpr char kEPRKeepaliveTimerName[] = "epr_keepalive_timer";
-constexpr int kPPSTimerIntervalMs = 7000;
-
 constexpr char kSoftResetWatchdogTimerName[] = "soft_watchdog";
-// constexpr int kSoftResetWatchdogIntervalMs = 250;
-constexpr int kSoftResetWatchdogIntervalMs = 1000;
 
 // Make a Request Data Object for a fixed PDO.
 uint32_t make_fixed_rdo(uint8_t pdo_idx, uint16_t max_current_ma) {
@@ -48,10 +41,7 @@ uint32_t make_fixed_rdo(uint8_t pdo_idx, uint16_t max_current_ma) {
   rdo |= (0x1 << 25);            // USB cap.
   rdo |= (0x1 << 24);            // No USB suspend.
   rdo |= (0x0 << 23);            // Unchunked message supported.
-  // rdo |= (0x0 << 22);            // EPR cap.
-
-  // TODO: only set this bit if we actually need it.
-  rdo |= (0x1 << 22);  // EPR cap.
+  rdo |= (0x1 << 22);            // EPR cap.
   rdo |= (max_current_ma / 10) << 10;
   rdo |= (max_current_ma / 10) << 0;
   return rdo;
@@ -62,10 +52,6 @@ uint32_t make_pps_rdo(uint8_t pdo_idx, uint16_t voltage_mv, uint16_t current_ma)
   uint32_t rdo = 0;
   rdo |= ((pdo_idx + 1) << 28);  // Object position.
   rdo |= (0x0 << 26);            // Cap mismatch.
-  // rdo |= (0x1 << 25);            // USB cap.
-  // rdo |= (0x1 << 24);            // No USB suspend.
-  // rdo |= (0x0 << 23);            // Unchunked message supported.
-  // rdo |= (0x0 << 22);  // EPR cap.
   rdo |= (voltage_mv / 20) << 9;
   rdo |= (current_ma / 50) << 0;
   return rdo;
@@ -80,7 +66,7 @@ void FUSB302::dump_config() {
 
 bool FUSB302::measure_cc_pin(uint8_t cc_pin, uint8_t *voltage_out) {
   // Enable CCx measuring circuit.
-  if (!this->write_byte(REG_SWITCHES0, 0x03 | (cc_pin << 2))) {
+  if (!this->write_byte(REG_SWITCHES0, REG_SWITCHES0_PULLDOWN_CC1 | REG_SWITCHES0_PULLDOWN_CC2 | (cc_pin << 2))) {
     FUSB302_FAIL("Failed to write to SWITCHES0");
     return false;
   }
@@ -125,19 +111,16 @@ void FUSB302::setup() {
 }
 
 void FUSB302::start_power_negotiation() {
-  // Reset.
-  if (!this->write_byte(REG_RESET, 0x03)) {
+  if (!this->write_byte(REG_RESET, REG_RESET_SW_RESET | REG_RESET_PD_RESET)) {
     FUSB302_FAIL("Failed to write to RESET");
     return;
   }
 
-  // Write to POWER.
-  if (!this->write_byte(REG_POWER, 0x0f)) {
+  if (!this->write_byte(REG_POWER, REG_POWER_POWER_ALL)) {
     FUSB302_FAIL("Failed to write to POWER");
     return;
   }
 
-  // Get the device id.
   uint8_t device_id;
   if (this->read_register(REG_DEVICE_ID, (uint8_t *) &device_id, 1, false)) {
     FUSB302_FAIL("Failed to read device id");
@@ -146,43 +129,42 @@ void FUSB302::start_power_negotiation() {
     ESP_LOGV(TAG, "Device id: 0x%04X", device_id);
   }
 
-  // Mask all these interrupts.
-  if (!this->write_byte(REG_MASK1, 0xff)) {
+  if (!this->write_byte(REG_MASK1, REG_MASK1_MASK_ALL)) {
     FUSB302_FAIL("Failed to write to MASK1");
     return;
   }
 
-  // Enable all these interrupts.
-  if (!this->write_byte(REG_MASKA, 0x00)) {
+  if (!this->write_byte(REG_MASKA, REG_MASKA_MASK_NONE)) {
     FUSB302_FAIL("Failed to write to MASKA");
     return;
   }
-  if (!this->write_byte(REG_MASKB, 0x00)) {
+  if (!this->write_byte(REG_MASKB, REG_MASKB_MASK_NONE)) {
     FUSB302_FAIL("Failed to write to MASKB");
     return;
   }
-  if (!this->write_byte(REG_CONTROL0, 0b11 << 2)) {
-    ESP_LOGE(TAG, "Failed to write to CONTROL0");
-    FUSB302_FAIL("Failed to write to CONTROL0");
-    return;
-  }
+
+  // if (!this->write_byte(REG_CONTROL0, REG_CONTROL0_HOST_CUR_HIGH)) {
+  //   ESP_LOGE(TAG, "Failed to write to CONTROL0");
+  //   FUSB302_FAIL("Failed to write to CONTROL0");
+  //   return;
+  // }
 
   // Enable packet retry.
-  if (!this->write_byte(REG_CONTROL3, 0x07)) {
+  if (!this->write_byte(REG_CONTROL3, REG_CONTROL3_AUTO_RETRY | REG_CONTROL3_N_RETRIES_3)) {
     FUSB302_FAIL("Failed to write to CONTROL3");
     return;
   }
 
-  if (!this->write_byte(REG_CONTROL2, 0x00)) {
+  if (!this->write_byte(REG_CONTROL2, REG_CONTROL2_DO_NOT_USE)) {
     FUSB302_FAIL("Failed to write to CONTROL2");
     return;
   }
 
-  // Clear RX fifo.
-  if (!this->write_byte(REG_CONTROL1, 0x04)) {
-    FUSB302_FAIL("Failed to write to CONTROL1");
-    return;
-  }
+  // // Clear RX fifo.
+  // if (!this->write_byte(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
+  //   FUSB302_FAIL("Failed to write to CONTROL1");
+  //   return;
+  // }
 
   // Ready CC1 and CC2 voltages to figure out which one we're connected to.
   uint8_t cc1_voltage, cc2_voltage;
@@ -196,31 +178,33 @@ void FUSB302::start_power_negotiation() {
   }
   ESP_LOGD(TAG, "CC1 voltage: %d, CC2 voltage: %d", cc1_voltage, cc2_voltage);
 
-  uint8_t cc_pin = cc1_voltage > cc2_voltage ? 0b01 : 0b10;
-  if (!this->write_byte(REG_SWITCHES0, 0x03 | (cc_pin << 2))) {
+  const uint8_t cc_pin = cc1_voltage > cc2_voltage ? 1 : 2;
+  if (!this->write_byte(REG_SWITCHES0, REG_SWITCHES0_PULLDOWN_CC1 | REG_SWITCHES0_PULLDOWN_CC2 |
+                                           (cc_pin == 1 ? REG_SWITCHES0_MEAS_CC1 : REG_SWITCHES0_MEAS_CC2))) {
     FUSB302_FAIL("Failed to write to SWITCHES0");
     return;
   }
 
   // Enable auto GoodCRC response and TXCCx, plus keep the revision 2.0 of the GoodCRC ack packet.
-  if (!this->write_byte(REG_SWITCHES1, cc_pin | (1 << 2) | (1 << 5))) {
+  if (!this->write_byte(REG_SWITCHES1, (cc_pin == 1 ? REG_SWITCHES1_TXCC1 : REG_SWITCHES1_TXCC2) |
+                                           REG_SWITCHES1_AUTO_CRC | REG_SWITCHES1_SPEC2)) {
     FUSB302_FAIL("Failed to write to SWITCHES1");
     return;
   }
 
   // Flush the TX FIFO.
-  if (!this->write_byte(REG_CONTROL0, 0x44)) {
+  if (!this->write_byte(REG_CONTROL0, REG_CONTROL0_HOST_CUR_HIGH | REG_CONTROL0_TX_FLUSH)) {
     FUSB302_FAIL("Failed to write to CONTROL0");
     return;
   }
   // Flush the RX FIFO.
-  if (!this->write_byte(REG_CONTROL1, 0x1 << 2)) {
+  if (!this->write_byte(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
     FUSB302_FAIL("Failed to write to CONTROL1");
     return;
   }
 
   // Reset PD logic.
-  if (!this->write_byte(REG_RESET, 0x02)) {
+  if (!this->write_byte(REG_RESET, REG_RESET_PD_RESET)) {
     FUSB302_FAIL("Failed to write to RESET");
     return;
   }
@@ -294,11 +278,13 @@ bool FUSB302::has_fifo_msg() {
 
 bool FUSB302::read_fifo() {
   // RX token (1) + header (2) + extended_header (2) +  4 * MAX_PDOS + CRC (4).
-  uint8_t buf[1 + 2 + 2 + 4 * FUSB302_MAX_PDOS + 4];
+  uint8_t buf[1 + 2 + 2 + 4 * kMaxPDOS + 4];
   if (this->read_register_retry(REG_FIFOS, buf, 1 + 2)) {
     ESP_LOGE(TAG, "Failed to read FIFO rx token and header");
     return false;
   }
+
+  uint8_t rx_token = buf[0];
 
   ESP_LOGD(TAG, "Header: 0x%04X", header);
   fifo_msg_.header = buf[2] << 8 | buf[1];
@@ -306,12 +292,13 @@ bool FUSB302::read_fifo() {
   fifo_msg_.msg_type = fifo_msg_.header & 0x1f;
   fifo_msg_.extended = (fifo_msg_.header >> 15) & 0x1;
 
-  if (fifo_msg_.n_objs > FUSB302_MAX_PDOS) {
+  if (fifo_msg_.n_objs > kMaxPDOS) {
     ESP_LOGE(TAG, "Too many objects in message of type %d: %d", fifo_msg_.msg_type, fifo_msg_.n_objs);
     return false;
   }
 
-  uint8_t *data_buf = buf + 1 + 2;
+  // Data starts after RX token (1 byte) + header (2 bytes).
+  uint8_t *data_buf = buf + sizeof(rx_token) + sizeof(fifo_msg_.header);
 
   // Read data objects + CRC.
   if (this->read_register_retry(REG_FIFOS, data_buf, 4 * fifo_msg_.n_objs + 4)) {
@@ -325,7 +312,6 @@ bool FUSB302::read_fifo() {
         data_buf[i * 4 + 3] << 24 | data_buf[i * 4 + 2] << 16 | data_buf[i * 4 + 1] << 8 | data_buf[i * 4];
   }
 
-  uint8_t rx_token = buf[0];
   fifo_msg_.destination = ((rx_token >> 4) & 0x0e) == 0x0e ? FIFOMsg::Destination::SOP : FIFOMsg::Destination::UNKNOWN;
 
   const uint8_t *crc_buf = data_buf + 4 * fifo_msg_.n_objs;
@@ -346,18 +332,18 @@ bool FUSB302::handle_msg() {
   }
 
   if (fifo_msg_.n_objs == 0) {
-    if (fifo_msg_.msg_type == 0x01) {  // GoodCRC.
+    if (fifo_msg_.msg_type == kCtrlMsgTypeGoodCRC) {
       return true;
-    } else if (fifo_msg_.msg_type == 0x03) {  // Accept.
+    } else if (fifo_msg_.msg_type == kCtrlMsgTypeAccept) {
       ESP_LOGW(TAG, "Accept message received");
       enter_state(State::TRANSITION_SINK);
-    } else if (fifo_msg_.msg_type == 0x06) {  // PS_RDY.
+    } else if (fifo_msg_.msg_type == kCtrlMsgTypePSReady) {
       ESP_LOGW(TAG, "PS_RDY message received");
       enter_state(State::READY);
-    } else if (fifo_msg_.msg_type == 0x0d) {  // Soft_Reset.
+    } else if (fifo_msg_.msg_type == kCtrlMsgTypeSoftReset) {
       // Send an Accept message right away. If things go well, the source will send a Source_Capabilities message
       // shortly after.
-      if (!this->send_msg(0b11, 0, nullptr)) {
+      if (!this->send_msg(kCtrlMsgTypeAccept, 0, nullptr)) {
         ESP_LOGE(TAG, "Failed to send Accept in response to Soft_Reset");
         return false;
       }
@@ -366,14 +352,14 @@ bool FUSB302::handle_msg() {
       ESP_LOGW(TAG, "Unhandled command message type: 0x%02X", fifo_msg_.msg_type);
     }
   } else {
-    if (fifo_msg_.msg_type == 0x01) {  // Source_Capabilities or EPR_Source_Capabilities.
+    if (fifo_msg_.msg_type == kDataMsgTypeSourceCapabilities) {
       pd_spec_ = (fifo_msg_.header >> 6) & 0x3;
       if (!this->parse_pdos(fifo_msg_.n_objs, fifo_msg_.objs)) {
         ESP_LOGE(TAG, "Failed to parse PDOS");
         return false;
       }
       enter_state(State::EVALUATE_CAPABILITY);
-    } else if (fifo_msg_.msg_type == 0b1010) {  // EPR_Mode.
+    } else if (fifo_msg_.msg_type == kDataMsgTypeEPRMode) {
       uint8_t action = (fifo_msg_.objs[0] >> 24) & 0xff;
       if (action == 0x2) {  // Enter Acknowledged.
         ESP_LOGW(TAG, "Received EPR_Mode: Enter Acknowledged.");
@@ -386,8 +372,6 @@ bool FUSB302::handle_msg() {
       } else {
         ESP_LOGE(TAG, "Received unexpected EPR_Mode message. Action: %d. Header: 0x%04X", action, fifo_msg_.header);
       }
-      return true;
-    } else if (fifo_msg_.msg_type == 0b1010) {  // EPR_Mode.
     } else {
       ESP_LOGW(TAG, "Unhandled data message type: 0x%02X", fifo_msg_.msg_type);
     }
@@ -401,8 +385,8 @@ bool FUSB302::handle_extended_msg() {
   bool chunked = (ext_header >> 15) & 0x1;
   uint8_t chunk_number = (ext_header >> 11) & 0x0f;
 
-  // Check data.
-  const uint8_t *data = (const uint8_t *) fifo_msg_.objs + 2;
+  // Data starts after the extended header (2 bytes).
+  const uint8_t *data = (const uint8_t *) fifo_msg_.objs + sizeof(ext_header);
   // Discount the header (2 bytes). The "padding" in the spec in this case is actually half of the PDO in the next
   // chunk.
   const size_t actual_len = fifo_msg_.n_objs * 4 - 2;
@@ -431,13 +415,13 @@ bool FUSB302::handle_extended_msg() {
 
   // Control message.
   if (n_objs == 0) {
-    if (fifo_msg_.msg_type == 0b10000) {  // Extended_Control -- EPR_KeepAlive_Ack.
+    if (fifo_msg_.msg_type == kExtMsgTypeExtendedControl) {
       ESP_LOGD(TAG, "Received EPR_KeepAlive_Ack");
     } else {
       ESP_LOGW(TAG, "Unhandled extended control message type: 0x%02X", fifo_msg_.msg_type);
     }
-  } else {                                // Data message.
-    if (fifo_msg_.msg_type == 0b10001) {  // EPR_Source_Capabilities.
+  } else {  // Data message.
+    if (fifo_msg_.msg_type == kExtMsgTypeEPRSourceCapabilities) {
       // Extract the PD spec revision.
       pd_spec_ = (fifo_msg_.header >> 6) & 0x3;
 
@@ -513,7 +497,7 @@ bool FUSB302::request_pdo() {
   }
 
   if (!epr_mode_) {
-    if (!this->send_msg(0b10, sizeof(request), (uint8_t *) &request)) {
+    if (!this->send_msg(kDataMsgTypeRequest, sizeof(request), (uint8_t *) &request)) {
       ESP_LOGE(TAG, "Failed to send PD request");
       return false;
     }
@@ -521,12 +505,11 @@ bool FUSB302::request_pdo() {
   }
 
   // In EPR mode, we have to send an EPR_Request, even when requesting a SPR PDO.
-  // uint32_t *pdo0 = ((uint32_t *) chunked_buffer_.data)[selected_pdo_idx_.value_or(0)];
   uint32_t *pdo0 = ((uint32_t *) chunked_buffer_.data) + selected_pdo_idx_.value_or(0);
   uint8_t buf[sizeof(request) + sizeof(pdo0)];
   memcpy(buf, &request, sizeof(request));
   memcpy(buf + sizeof(request), pdo0, sizeof(*pdo0));
-  return this->send_msg(0b1001, sizeof(buf), buf);
+  return this->send_msg(kDataMsgTypeEPRRequest, sizeof(buf), buf);
 }
 
 bool FUSB302::send_soft_reset() {
@@ -539,7 +522,7 @@ bool FUSB302::send_soft_reset() {
     ESP_LOGE(TAG, "Failed to flush TX FIFO");
     return false;
   }
-  if (!this->send_msg(0b1101, 0, nullptr)) {
+  if (!this->send_msg(kCtrlMsgTypeSoftReset, 0, nullptr)) {
     ESP_LOGE(TAG, "Failed to send soft reset");
     return false;
   }
@@ -547,15 +530,14 @@ bool FUSB302::send_soft_reset() {
 }
 
 bool FUSB302::send_epr_mode_enter() {
-  // TODO: start rEnterEPR timer.
   uint32_t eprmdo = 0;
   // Action: enter.
-  eprmdo |= 0x01 << 24;
-  // EPR sink operational PDP. In 1W units?
+  eprmdo |= (0x01 << 24);
+  // EPR sink operational PDP in 1W units.
   // TODO: actually compute this. Safe 30W for now.
-  eprmdo |= (30) << 16;
+  eprmdo |= ((30) << 16);
 
-  if (!this->send_msg(0b1010, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
+  if (!this->send_msg(kDataMsgTypeEPRMode, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
     ESP_LOGE(TAG, "Failed to send EPR_Mode enter message");
     return false;
   }
@@ -563,12 +545,11 @@ bool FUSB302::send_epr_mode_enter() {
 }
 
 bool FUSB302::send_epr_mode_exit() {
-  // TODO: start rEnterEPR timer.
   uint32_t eprmdo = 0;
   // Action: exit.
-  eprmdo |= 0x05 << 24;
+  eprmdo |= (0x05 << 24);
 
-  if (!this->send_msg(0b1010, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
+  if (!this->send_msg(kDataMsgTypeEPRMode, sizeof(eprmdo), (uint8_t *) &eprmdo)) {
     ESP_LOGE(TAG, "Failed to send EPR_Mode enter message");
     return false;
   }
@@ -586,7 +567,8 @@ bool FUSB302::send_chunk_request(uint8_t chunk_number) {
   padded_data |= ext_header;
 
   // Assume we only request extra chunks for EPR_Source_Capabilities.
-  if (!this->send_msg(0b10001, sizeof(padded_data), (uint8_t *) &padded_data, /*extended=*/true)) {
+  if (!this->send_msg(kExtMsgTypeEPRSourceCapabilities, sizeof(padded_data), (uint8_t *) &padded_data,
+                      /*extended=*/true)) {
     ESP_LOGE(TAG, "Failed to send Chunk Request message");
     return false;
   }
@@ -599,10 +581,10 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extend
   // Truncate to 3 bits.
   msg_id &= 0x7;
 
-  // If we calculate CRC ourselves, we need to send that as well.
-  uint8_t last = 0x80 | (2 + len + 4);
-  const uint8_t sop[] = {0x12, 0x12, 0x12, 0x13, last};
-  const uint8_t eop[] = {0x14, 0xfe, 0xa1};
+  // header (2 bytes) + data (len bytes) + crc (4 bytes).
+  uint8_t last = kTokPACKSYM | (sizeof(uint16_t) + len + sizeof(uint32_t));
+  const uint8_t sop[] = {kTokSOP1, kTokSOP1, kTokSOP1, kTokSOP2, last};
+  const uint8_t eop[] = {kTokEOP, kTokTXOFF, kTokTXON};
 
   uint16_t header = 0;
   // Number of objects. Each object is 4 bytes.
@@ -612,8 +594,7 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extend
   header |= ((msg_id++) << 9);
   header |= (extended << 15);
 
-  // TODO: max buff size.
-  uint8_t buff[64];
+  uint8_t buff[sizeof(sop) + sizeof(header) + kMaxPDOS * sizeof(uint32_t) + sizeof(uint32_t) + sizeof(eop)];
   uint8_t pos = 0;
   memcpy(buff + pos, sop, sizeof(sop));
   pos += sizeof(sop);
@@ -637,7 +618,7 @@ void FUSB302::maybe_rerequest_pps_pdo() {
   LockGuard lock(mutex_);
 
   // Schedule a new soft reset watchdog timer.
-  this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
+  this->set_timeout(kSoftResetWatchdogTimerName, tSoftResetWatchdogIntervalMs, [this]() { FUSB302::Watchdog(this); });
 
   ESP_LOGW(TAG, "Maybe rerequesting PPS PDO. State is: %d", static_cast<int>(state_));
   if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
@@ -649,7 +630,7 @@ void FUSB302::maybe_rerequest_pps_pdo() {
 
     ESP_LOGW(TAG, "Done re-requesting PDO. Re-scheduling PPS timer");
     // Schedule a new PPS timer.
-    this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
+    this->set_timeout(kPPSTimerName, tPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
   } else {
     ESP_LOGE(TAG, "Not in PPS mode!");
   }
@@ -663,17 +644,15 @@ void FUSB302::maybe_send_epr_keepalive() {
   }
   ESP_LOGI(TAG, "Ok! Sending EPR keepalive.");
 
-  // EPR_KeepAlive.
-  uint16_t ecdb = 0x03;
+  uint16_t ecdb = kExtMsgTypeEPRKeepAlive;
 
   // Data size is 2 bytes & chunked.
-  uint16_t ext_header = 0x02 | (1 << 15);
+  uint16_t ext_header = sizeof(ecdb) | (1 << 15);
   // uint16_t ext_header = 0x02;
 
   uint32_t keepalive = ecdb << 16 | ext_header;
 
-  // Type Extended_Control.
-  if (!this->send_msg(0b10000, sizeof(keepalive), (uint8_t *) &keepalive, /*extended=*/true)) {
+  if (!this->send_msg(kExtMsgTypeExtendedControl, sizeof(keepalive), (uint8_t *) &keepalive, /*extended=*/true)) {
     ESP_LOGE(TAG, "Failed to send EPR keepalive");
     return;
   }
@@ -702,8 +681,8 @@ void FUSB302::enter_state(State state) {
     case State::EVALUATE_CAPABILITY: {
       // We received capabities. We can cancel the SinkWaitCapTimer timer.
       cancel_timeout(kWaitForCapsTimerName);
-      // Start our own watchdog. We should we in the READY state in kSoftResetWatchdogIntervalMs.
-      this->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
+      // Start our own watchdog. We should we in the READY state in tSoftResetWatchdogIntervalMs.
+      this->set_timeout(kSoftResetWatchdogTimerName, tSoftResetWatchdogIntervalMs,
                         [this]() { FUSB302::Watchdog(this); });
 
       this->evaluate_capabilities();
@@ -716,7 +695,7 @@ void FUSB302::enter_state(State state) {
       // Do we need to schedule a PPS timer?
       if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
           pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
-        this->set_timeout(kPPSTimerName, kPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
+        this->set_timeout(kPPSTimerName, tPPSTimerIntervalMs, [this]() { this->maybe_rerequest_pps_pdo(); });
       }
 
       // Do we need to schedule an EPR keepalive timer?
@@ -818,7 +797,7 @@ void FUSB302::Watchdog(FUSB302 *instance) {
   }
 
   // We will try to fix the issue first, otherwise we will revisit the watchdog.
-  instance->set_timeout(kSoftResetWatchdogTimerName, kSoftResetWatchdogIntervalMs,
+  instance->set_timeout(kSoftResetWatchdogTimerName, tSoftResetWatchdogIntervalMs,
                         [instance]() { instance->Watchdog(instance); });
 
   // If interrupt is asserted, something is wrong. Could be caused by an error in clearing the interrupt.

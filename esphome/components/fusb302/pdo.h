@@ -3,10 +3,6 @@
 namespace esphome {
 namespace fusb302 {
 
-// EPR.
-#define FUSB302_MAX_PDOS 11
-// #define FUSB302_MAX_PDOS 7
-
 // Logs a parsed PDO (Power Data Object) using one of the ESP_LOG* macros.
 #define FUSB302_LOG_PDO(LOG, pdo) \
   do { \

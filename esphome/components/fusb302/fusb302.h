@@ -8,7 +8,7 @@
 #include "esphome/components/i2c/i2c.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/fusb302/pdo.h"
-#include "esphome/components/fusb302/timers.h"
+#include "esphome/components/fusb302/consts.h"
 
 namespace esphome {
 namespace fusb302 {
@@ -20,11 +20,6 @@ enum class State {
   SELECT_CAPABILITY,
   TRANSITION_SINK,
   READY,
-
-  // RECEIVED_CAPS,
-  // REQUESTED_PDO,
-  REQUESTED_SAFE_5V,
-  // READY,
   FAILURE,
 };
 
@@ -35,14 +30,7 @@ struct FIFOMsg {
   uint8_t msg_type;
   uint8_t n_objs;
   bool extended;
-
-  // struct {
-  //   uint16_t data;
-  //   bool chunked;
-  //   size_t data_size;
-  // } extended_header;
-
-  uint32_t objs[FUSB302_MAX_PDOS];
+  uint32_t objs[kMaxPDOS];
 };
 
 class FUSB302 : public i2c::I2CDevice, public PollingComponent {
