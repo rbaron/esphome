@@ -108,12 +108,6 @@ class FUSB302 : public i2c::I2CDevice, public PollingComponent {
   bool send_epr_mode_exit();
   bool epr_mode_{false};
 
-  // Reliability hacks.
-  i2c::ErrorCode read_register_retry(uint8_t a_register, uint8_t *data, size_t len, bool stop = true);
-  i2c::ErrorCode write_register_retry(uint8_t a_register, const uint8_t *data, size_t len, bool stop = true);
-  bool read_byte_retry(uint8_t reg, uint8_t *value, bool stop = true);
-  bool write_byte_retry(uint8_t reg, uint8_t value, bool stop = true);
-
   Mutex mutex_{};
 
   // Wrapper around state change, so we can trigger callbacks.

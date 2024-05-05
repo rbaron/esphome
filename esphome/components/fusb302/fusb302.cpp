@@ -244,7 +244,7 @@ bool FUSB302::process_interrupt() {
   // Read all interrupt registers in one go.
   volatile uint8_t buf[7];
   i2c::ErrorCode err;
-  if ((err = this->read_register_retry(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
+  if ((err = this->read_register(REG_STATUS0A, (uint8_t *) &buf, sizeof(buf), true))) {
     ESP_LOGE(TAG, "Failed to read reg. Error: %d", err);
     return false;
   }
@@ -269,7 +269,7 @@ bool FUSB302::process_interrupt() {
 
 bool FUSB302::has_fifo_msg() {
   uint8_t status1;
-  if (!this->read_byte_retry(REG_STATUS1, &status1)) {
+  if (!this->read_byte(REG_STATUS1, &status1)) {
     ESP_LOGE(TAG, "Failed to read status1");
     return false;
   }
@@ -279,7 +279,7 @@ bool FUSB302::has_fifo_msg() {
 bool FUSB302::read_fifo() {
   // RX token (1) + header (2) + extended_header (2) +  4 * MAX_PDOS + CRC (4).
   uint8_t buf[1 + 2 + 2 + 4 * kMaxPDOS + 4];
-  if (this->read_register_retry(REG_FIFOS, buf, 1 + 2)) {
+  if (this->read_register(REG_FIFOS, buf, 1 + 2)) {
     ESP_LOGE(TAG, "Failed to read FIFO rx token and header");
     return false;
   }
@@ -301,7 +301,7 @@ bool FUSB302::read_fifo() {
   uint8_t *data_buf = buf + sizeof(rx_token) + sizeof(fifo_msg_.header);
 
   // Read data objects + CRC.
-  if (this->read_register_retry(REG_FIFOS, data_buf, 4 * fifo_msg_.n_objs + 4)) {
+  if (this->read_register(REG_FIFOS, data_buf, 4 * fifo_msg_.n_objs + 4)) {
     ESP_LOGE(TAG, "Failed to read objects");
     return false;
   }
@@ -514,11 +514,11 @@ bool FUSB302::request_pdo() {
 
 bool FUSB302::send_soft_reset() {
   // Try our best to flush the contents for RX and TX fifo.
-  if (!this->write_byte_retry(REG_CONTROL0, REG_CONTROL0_TX_FLUSH)) {
+  if (!this->write_byte(REG_CONTROL0, REG_CONTROL0_TX_FLUSH)) {
     ESP_LOGE(TAG, "Failed to flush TX FIFO");
     return false;
   }
-  if (!this->write_byte_retry(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
+  if (!this->write_byte(REG_CONTROL1, REG_CONTROL1_RX_FLUSH)) {
     ESP_LOGE(TAG, "Failed to flush TX FIFO");
     return false;
   }
@@ -605,7 +605,7 @@ bool FUSB302::send_msg(uint8_t msg_type, uint8_t len, uint8_t *data, bool extend
   memcpy(buff + pos, eop, sizeof(eop));
   pos += sizeof(eop);
 
-  if (this->write_register_retry(REG_FIFOS, buff, pos)) {
+  if (this->write_register(REG_FIFOS, buff, pos)) {
     ESP_LOGE(TAG, "Failed to write eop to FIFO");
   }
   return true;
@@ -741,44 +741,6 @@ void FUSB302::enter_state(State state) {
     default:
       break;
   }
-}
-
-i2c::ErrorCode FUSB302::read_register_retry(uint8_t a_register, uint8_t *data, size_t len, bool stop) {
-  i2c::ErrorCode error;
-  for (uint8_t i = 0; i < kI2CMaxTries; i++) {
-    if ((error = this->read_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
-      break;
-    }
-    ESP_LOGE(TAG, "Failed to read register 0x%02x with error %d. Retrying...", a_register, error);
-    delay(kI2CSLeepBetweenAttemptsMS);
-  }
-  if (error != i2c::ErrorCode::ERROR_OK) {
-    ESP_LOGE(TAG, "Exceeded max retries for reading register 0x%02x. Giving up.", a_register);
-  }
-  return error;
-}
-
-i2c::ErrorCode FUSB302::write_register_retry(uint8_t a_register, const uint8_t *data, size_t len, bool stop) {
-  i2c::ErrorCode error;
-  for (uint8_t i = 0; i < kI2CMaxTries; i++) {
-    if ((error = this->write_register(a_register, data, len, stop)) == i2c::ErrorCode::ERROR_OK) {
-      break;
-    }
-    ESP_LOGE(TAG, "Failed to write register 0x%02x with error %d. Retrying...", a_register, error);
-    delay(kI2CSLeepBetweenAttemptsMS);
-  }
-  if (error != i2c::ErrorCode::ERROR_OK) {
-    ESP_LOGE(TAG, "Exceeded max retries for writing register 0x%02x. Giving up.", a_register);
-  }
-  return error;
-}
-
-bool FUSB302::read_byte_retry(uint8_t reg, uint8_t *value, bool stop) {
-  return read_register_retry(reg, value, 1, stop) == i2c::ErrorCode::ERROR_OK;
-}
-
-bool FUSB302::write_byte_retry(uint8_t reg, uint8_t value, bool stop) {
-  return write_register_retry(reg, &value, 1, stop) == i2c::ErrorCode::ERROR_OK;
 }
 
 void FUSB302::Watchdog(FUSB302 *instance) {
