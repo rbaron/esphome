@@ -7,9 +7,6 @@
 #include "esphome/components/fusb302/crc32.h"
 #include "esphome/core/hal.h"
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
 #define FUSB302_FAIL(str, ...) \
   do { \
     ESP_LOGE(TAG, str, ##__VA_ARGS__); \
