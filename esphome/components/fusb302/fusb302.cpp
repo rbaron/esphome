@@ -119,8 +119,7 @@ void FUSB302::setup() {
     int_pin_->attach_interrupt(FUSB302::ISR, this, gpio::INTERRUPT_FALLING_EDGE);
   }
 
-  // We have to be as fast as we can during the negotiation phase, so we'll use a high frequency loop. We may disable
-  // it once the negotiation is complete.
+  // We have to be as fast as we can during the negotiation phase.
   high_freq_loop_req_.start();
 
   if (this->start_power_negotiation_on_boot_) {
@@ -671,9 +670,6 @@ void FUSB302::enter_state(State state) {
       break;
     }
     case State::READY: {
-      // We can probably go back to usual loop update frequency.
-      // high_freq_loop_req_.stop();
-
       // Do we need to schedule a PPS timer?
       if (selected_pdo_idx_.has_value() && pdos_[*selected_pdo_idx_].type == PDO::Type::AUGMENTED &&
           pdos_[*selected_pdo_idx_].augmented.type == PDO::Augmented::Type::SPR_PPS) {
@@ -689,11 +685,11 @@ void FUSB302::enter_state(State state) {
       if (selected_pdo_idx_.has_value() && is_pdo_compatible(pdos_[*selected_pdo_idx_], power_requirement_)) {
         on_pd_negotiation_success_callback_.call(/*success=*/true);
         if (first_ready_state_) {
-          ESP_LOGI(TAG, "Succesfully Negotiated PDO:");
-          FUSB302_LOG_PDO(ESP_LOGI, pdos_[*selected_pdo_idx_]);
-          ESP_LOGI(TAG, "All available PDOs:");
+          ESP_LOGD(TAG, "Succesfully Negotiated PDO:");
+          FUSB302_LOG_PDO(ESP_LOGD, pdos_[*selected_pdo_idx_]);
+          ESP_LOGD(TAG, "All available PDOs:");
           for (const auto &pdo : pdos_) {
-            FUSB302_LOG_PDO(ESP_LOGI, pdo);
+            FUSB302_LOG_PDO(ESP_LOGD, pdo);
           }
         }
         first_ready_state_ = false;
@@ -701,7 +697,7 @@ void FUSB302::enter_state(State state) {
         // We selected the Safe5V, but we can try to go into EPR mode if the source supports it.
         if (selected_pdo_idx_.value_or(-1) == 0 && pdos_[0].type == PDO::Type::FIXED &&
             pdos_[0].fixed.epr_mode_capable && !epr_mode_) {
-          ESP_LOGI(TAG, "Selected Safe5V, but EPR mode capable. Trying to go into EPR mode.");
+          ESP_LOGW(TAG, "Selected Safe5V, but EPR mode capable. Trying to go into EPR mode.");
           FUSB302_LOG_PDO(ESP_LOGW, pdos_[0]);
           if (!this->send_epr_mode_enter()) {
             ESP_LOGE(TAG, "Failed to send EPR mode enter message.");
@@ -712,10 +708,13 @@ void FUSB302::enter_state(State state) {
         // Nothing else we can do, the requested power cannot be provided.
         else {
           on_pd_negotiation_failure_callback_.call(/*success=*/false);
-          ESP_LOGI(TAG,
+          ESP_LOGE(TAG,
                    "No compatible PDO found for voltage: %u mV; current: %u mA. Negotiated the fallback safe 5V. The "
                    "available Power Delivery Objects are: ",
                    power_requirement_.voltage_mv, power_requirement_.current_ma);
+          for (const auto &pdo : pdos_) {
+            FUSB302_LOG_PDO(ESP_LOGE, pdo);
+          }
           return;
         }
       }
