@@ -312,7 +312,7 @@ bool FUSB302::read_fifo() {
   uint32_t crc_calc = crc32(buf + 1, crc_buf - (buf + 1));
 
   if (crc != crc_calc) {
-    ESP_LOGE(TAG, "CRC mismatch! 0x%08X != 0x%08X", crc, crc_calc);
+    ESP_LOGE(TAG, "CRC mismatch! 0x%08lX != 0x%08lX", crc, crc_calc);
     return false;
   }
 
@@ -448,7 +448,7 @@ bool FUSB302::parse_pdos(uint8_t n_pdos, uint32_t *pdos) {
     pdos_.push_back(parse_pdo(pdos[i]));
     const PDO &pdo = pdos_.back();
     if (!pdo.parsed) {
-      ESP_LOGE(TAG, "Failed to parse PDO 0x%08X", pdos[i]);
+      ESP_LOGE(TAG, "Failed to parse PDO 0x%08lX", pdos[i]);
     }
   }
 
