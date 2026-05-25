@@ -33,6 +33,7 @@ class LD8035Clock : public PollingComponent {
   void set_dp_pin(GPIOPin *pin) { this->dp_pin_ = pin; }
   void set_grid_pin(uint8_t index, GPIOPin *pin) { this->grid_pins_[index] = pin; }
   void set_scan_interval_us(uint32_t us) { this->scan_interval_us_ = us; }
+  void set_blank_during_latch(bool blank) { this->blank_during_latch_ = blank; }
   void set_writer(ld8035_clock_writer_t &&writer) { this->writer_ = std::move(writer); }
 
   /// Print `str` starting at digit `start_pos`. A '.' sets the DP on the
@@ -58,6 +59,7 @@ class LD8035Clock : public PollingComponent {
   std::array<GPIOPin *, NUM_DIGITS> grid_pins_{};
 
   uint32_t scan_interval_us_{2000};
+  bool blank_during_latch_{true};
   esp_timer_handle_t scan_timer_{nullptr};
 
   // Logical segment buffer filled by the writer lambda via print().

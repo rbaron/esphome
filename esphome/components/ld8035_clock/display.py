@@ -16,6 +16,7 @@ CONF_LATCH_PIN = "latch_pin"
 CONF_DP_PIN = "dp_pin"
 CONF_GRID_PINS = "grid_pins"
 CONF_SCAN_INTERVAL = "scan_interval"
+CONF_BLANK_DURING_LATCH = "blank_during_latch"
 
 ld8035_clock_ns = cg.esphome_ns.namespace("ld8035_clock")
 LD8035Clock = ld8035_clock_ns.class_("LD8035Clock", cg.PollingComponent)
@@ -39,6 +40,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(
                 CONF_SCAN_INTERVAL, default="2ms"
             ): cv.positive_time_period_microseconds,
+            cv.Optional(CONF_BLANK_DURING_LATCH, default=True): cv.boolean,
         }
     ),
     cv.only_on_esp32,
@@ -61,6 +63,7 @@ async def to_code(config):
         cg.add(var.set_grid_pin(i, await cg.gpio_pin_expression(pin_config)))
 
     cg.add(var.set_scan_interval_us(config[CONF_SCAN_INTERVAL].total_microseconds))
+    cg.add(var.set_blank_during_latch(config[CONF_BLANK_DURING_LATCH]))
 
     if CONF_LAMBDA in config:
         lambda_ = await cg.process_lambda(

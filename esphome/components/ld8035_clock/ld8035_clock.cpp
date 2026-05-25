@@ -157,8 +157,9 @@ void LD8035Clock::dump_config() {
   ESP_LOGCONFIG(TAG,
                 "LD8035 Clock:\n"
                 "  Digits: %u\n"
-                "  Scan interval: %u us",
-                NUM_DIGITS, this->scan_interval_us_);
+                "  Scan interval: %u us\n"
+                "  Blank during latch: %s",
+                NUM_DIGITS, this->scan_interval_us_, YESNO(this->blank_during_latch_));
   LOG_PIN("  SER (data):   ", this->ser_pin_);
   LOG_PIN("  SRCLK (clk):  ", this->srclk_pin_);
   LOG_PIN("  RCLK (latch): ", this->rclk_pin_);
@@ -181,36 +182,41 @@ void LD8035Clock::update() {
 void LD8035Clock::scan_tick_trampoline_(void *arg) { static_cast<LD8035Clock *>(arg)->scan_tick_(); }
 
 void LD8035Clock::scan_tick_() {
-  // 1) BLANK the display so the about-to-be-shifted bits never show on the
-  //    previously-active digit (no ghosting).
-  if (this->oe_pin_ != nullptr) {
-    this->oe_pin_->digital_write(true);
-  } else {
-    for (auto *grid : this->grid_pins_)
-      grid->digital_write(false);
+  uint8_t prev_digit = this->active_digit_;
+  uint8_t next_digit = (prev_digit + 1) % NUM_DIGITS;
+  uint8_t seg = this->buffer_[next_digit];
+
+  // 1) Optional pre-blank. Eliminates segment ghosting during the shift at
+  // the cost of a small dark gap. Disable for max brightness if you can
+  // tolerate the ghost.
+  if (this->blank_during_latch_) {
+    if (this->oe_pin_ != nullptr) {
+      this->oe_pin_->digital_write(true);  // /OE high: outputs Hi-Z
+    } else {
+      this->grid_pins_[prev_digit]->digital_write(false);
+    }
+    this->dp_pin_->digital_write(false);
   }
-  this->dp_pin_->digital_write(false);
 
-  // 2) Advance to the next digit.
-  this->active_digit_ = (this->active_digit_ + 1) % NUM_DIGITS;
-  uint8_t seg = this->buffer_[this->active_digit_];
-
-  // 3) Shift the new segment byte and latch it onto the 595's outputs.
+  // 2) Shift the new segment byte and latch it onto the 595's outputs.
   this->shift_byte_(remap_to_shift_register_(seg));
   this->rclk_pin_->digital_write(true);
   this->rclk_pin_->digital_write(false);
 
-  // 4) DP is on a direct GPIO -- set it for this digit.
-  this->dp_pin_->digital_write(((this->dp_mask_ >> this->active_digit_) & 1) != 0);
+  // 3) DP is on a direct GPIO -- set it for the new digit.
+  this->dp_pin_->digital_write(((this->dp_mask_ >> next_digit) & 1) != 0);
 
-  // 5) UN-BLANK: enable the active grid (and only the active grid).
-  if (this->oe_pin_ != nullptr) {
-    for (uint8_t i = 0; i < NUM_DIGITS; i++)
-      this->grid_pins_[i]->digital_write(i == this->active_digit_);
+  // 4) Switch grids: previous off, new on. Maintains the invariant that
+  // exactly one grid is high at end of tick, regardless of blanking mode.
+  this->grid_pins_[prev_digit]->digital_write(false);
+  this->grid_pins_[next_digit]->digital_write(true);
+
+  // 5) Un-blank (only meaningful when /OE was used to blank).
+  if (this->blank_during_latch_ && this->oe_pin_ != nullptr) {
     this->oe_pin_->digital_write(false);
-  } else {
-    this->grid_pins_[this->active_digit_]->digital_write(true);
   }
+
+  this->active_digit_ = next_digit;
 }
 
 void LD8035Clock::shift_byte_(uint8_t b) {
