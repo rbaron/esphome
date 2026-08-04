@@ -35,6 +35,24 @@ void GU128X64D7000::setup() {
   ESP_LOGI(TAG, "Display initialized");
 }
 
+void GU128X64D7000::set_power(bool power) {
+  if (power == this->power_)
+    return;
+  this->power_ = power;
+
+  // Screen saver command (US ( a): 1F 28 61 40 n, with n = 0 to turn the
+  // display power off and n = 1 to turn it back on.
+  const uint8_t power_cmd[] = {0x1F, 0x28, 0x61, 0x40, static_cast<uint8_t>(power ? 0x01 : 0x00)};
+  this->write_array(power_cmd, sizeof(power_cmd));
+  this->flush();
+
+  // Nothing was sent while powered off, so push the current buffer back out.
+  if (power)
+    this->write_display_data_();
+
+  ESP_LOGD(TAG, "Display power %s", ONOFF(power));
+}
+
 void GU128X64D7000::dump_config() {
   ESP_LOGCONFIG(TAG, "GU128X64D7000:");
   ESP_LOGCONFIG(TAG, "  Width: %d, Height: %d", this->get_width_internal(), this->get_height_internal());
@@ -45,6 +63,8 @@ void GU128X64D7000::dump_config() {
 }
 
 void GU128X64D7000::update() {
+  if (!this->power_)
+    return;
   this->do_update_();
   this->write_display_data_();
   ESP_LOGD(TAG, "Display data sent to UART");
