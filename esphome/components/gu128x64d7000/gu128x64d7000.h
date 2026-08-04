@@ -8,6 +8,12 @@
 namespace esphome {
 namespace gu128x64d7000 {
 
+// Brightness levels accepted by the brightness control command. The display
+// powers up at the brightest level.
+static const uint8_t MIN_BRIGHTNESS = 1;
+static const uint8_t MAX_BRIGHTNESS = 8;
+static const uint8_t DEFAULT_BRIGHTNESS = MAX_BRIGHTNESS;
+
 class GU128X64D7000 : public display::DisplayBuffer, public uart::UARTDevice {
  public:
   void setup() override;
@@ -22,6 +28,11 @@ class GU128X64D7000 : public display::DisplayBuffer, public uart::UARTDevice {
   void set_power(bool power);
   bool is_powered() const { return this->power_; }
 
+  // Brightness of the whole screen, from MIN_BRIGHTNESS (darkest) to
+  // MAX_BRIGHTNESS (brightest).
+  void set_brightness(uint8_t brightness);
+  uint8_t get_brightness() const { return this->brightness_; }
+
   display::DisplayType get_display_type() override { return display::DisplayType::DISPLAY_TYPE_BINARY; }
 
  protected:
@@ -34,21 +45,29 @@ class GU128X64D7000 : public display::DisplayBuffer, public uart::UARTDevice {
   GPIOPin *reset_pin_{nullptr};
   GPIOPin *busy_pin_{nullptr};
   bool power_{true};
+  uint8_t brightness_{DEFAULT_BRIGHTNESS};
 };
 
 template<typename... Ts> class TurnOnAction : public Action<Ts...>, public Parented<GU128X64D7000> {
  public:
-  void play(Ts... x) override { this->parent_->set_power(true); }
+  void play(const Ts &...x) override { this->parent_->set_power(true); }
 };
 
 template<typename... Ts> class TurnOffAction : public Action<Ts...>, public Parented<GU128X64D7000> {
  public:
-  void play(Ts... x) override { this->parent_->set_power(false); }
+  void play(const Ts &...x) override { this->parent_->set_power(false); }
+};
+
+template<typename... Ts> class SetBrightnessAction : public Action<Ts...>, public Parented<GU128X64D7000> {
+ public:
+  TEMPLATABLE_VALUE(uint8_t, brightness)
+
+  void play(const Ts &...x) override { this->parent_->set_brightness(this->brightness_.value(x...)); }
 };
 
 template<typename... Ts> class IsPoweredCondition : public Condition<Ts...>, public Parented<GU128X64D7000> {
  public:
-  bool check(Ts... x) override { return this->parent_->is_powered(); }
+  bool check(const Ts &...x) override { return this->parent_->is_powered(); }
 };
 
 }  // namespace gu128x64d7000

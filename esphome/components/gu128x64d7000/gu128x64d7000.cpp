@@ -53,9 +53,25 @@ void GU128X64D7000::set_power(bool power) {
   ESP_LOGD(TAG, "Display power %s", ONOFF(power));
 }
 
+void GU128X64D7000::set_brightness(uint8_t brightness) {
+  brightness = clamp(brightness, MIN_BRIGHTNESS, MAX_BRIGHTNESS);
+  if (brightness == this->brightness_)
+    return;
+  this->brightness_ = brightness;
+
+  // Brightness control command (US X): 1F 58 n, with n = 1 (darkest) to
+  // 8 (brightest, the power-on default).
+  const uint8_t brightness_cmd[] = {0x1F, 0x58, brightness};
+  this->write_array(brightness_cmd, sizeof(brightness_cmd));
+  this->flush();
+
+  ESP_LOGD(TAG, "Display brightness %u", brightness);
+}
+
 void GU128X64D7000::dump_config() {
   ESP_LOGCONFIG(TAG, "GU128X64D7000:");
   ESP_LOGCONFIG(TAG, "  Width: %d, Height: %d", this->get_width_internal(), this->get_height_internal());
+  ESP_LOGCONFIG(TAG, "  Brightness: %u", this->brightness_);
   LOG_PIN("  Reset Pin: ", this->reset_pin_);
   LOG_PIN("  Busy Pin: ", this->busy_pin_);
   LOG_UPDATE_INTERVAL(this);

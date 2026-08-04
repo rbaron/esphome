@@ -2,10 +2,13 @@ from esphome import automation, pins
 import esphome.codegen as cg
 from esphome.components import display, uart
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_LAMBDA
+from esphome.const import CONF_BRIGHTNESS, CONF_ID, CONF_LAMBDA
 
 CONF_RESET_PIN = "reset_pin"
 CONF_BUSY_PIN = "busy_pin"
+
+MIN_BRIGHTNESS = 1
+MAX_BRIGHTNESS = 8
 
 CODEOWNERS = ["@rbaron"]
 DEPENDENCIES = ["uart"]
@@ -17,11 +20,21 @@ GU128X64D7000 = gu128x64d7000_ns.class_(
 
 TurnOnAction = gu128x64d7000_ns.class_("TurnOnAction", automation.Action)
 TurnOffAction = gu128x64d7000_ns.class_("TurnOffAction", automation.Action)
+SetBrightnessAction = gu128x64d7000_ns.class_("SetBrightnessAction", automation.Action)
 IsPoweredCondition = gu128x64d7000_ns.class_("IsPoweredCondition", automation.Condition)
 
 ACTION_SCHEMA = automation.maybe_simple_id(
     {
         cv.Required(CONF_ID): cv.use_id(GU128X64D7000),
+    }
+)
+
+SET_BRIGHTNESS_ACTION_SCHEMA = cv.Schema(
+    {
+        cv.Required(CONF_ID): cv.use_id(GU128X64D7000),
+        cv.Required(CONF_BRIGHTNESS): cv.templatable(
+            cv.int_range(min=MIN_BRIGHTNESS, max=MAX_BRIGHTNESS)
+        ),
     }
 )
 
@@ -63,6 +76,17 @@ async def to_code(config):
 async def gu128x64d7000_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
+    return var
+
+
+@automation.register_action(
+    "gu128x64d7000.set_brightness", SetBrightnessAction, SET_BRIGHTNESS_ACTION_SCHEMA
+)
+async def gu128x64d7000_set_brightness_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+    brightness = await cg.templatable(config[CONF_BRIGHTNESS], args, cg.uint8)
+    cg.add(var.set_brightness(brightness))
     return var
 
 
